@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Testing
+.coverage
+.pytest_cache/
+*.test.js
+
+# Temporary files
+*.tmp
+*.log
+.cache/
+
+# zeos specific
+test_context_optimization.py
+
+# Per-project operator state — stays on the operator's machine, never pushed.
+# Populated by /newproject, written by /snap and /end.
+souls/
+journals/
+memory/
+
+# Aider local history
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v*
+
+# Claude Code local-only settings (machine-specific)
+.claude/settings.local.json

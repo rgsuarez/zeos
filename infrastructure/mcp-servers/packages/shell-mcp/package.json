@@ -1,0 +1,23 @@
+{
+  "name": "@zeos/shell-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for zeos bang command execution",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "zeos-shell-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@zeos/mcp-shared": "workspace:*",
+    "@zeos/filesystem-mcp": "workspace:*"
+  },
+  "devDependencies": {}
+}

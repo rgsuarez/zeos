@@ -1,0 +1,300 @@
+{
+  "manifest_version": "2.3.0",
+  "zeos_version": "1.0.0",
+  "generated_at": "2026-01-03T03:10:00Z",
+  "generated_by": "Claude (system)",
+  "location": "kernel/ZEOS_MANIFEST.json",
+  "description": "The System Ledger: Complete Bill of Materials for zeos Core. This file is the single source of truth for what constitutes the zeos Kernel and enables automated upgrade operations.",
+  "architecture_note": "Architecture reference docs (ZEOS_ARCH_SPEC.md, SECRETS_MODEL.md, CAPABILITY_REGISTRY.json) live in apps/zeos-dev/docs/ and are loaded on-demand during zeos development, not during standard boot.",
+  "criticality_tiers": {
+    "L0": {
+      "name": "Kernel (Immutable)",
+      "description": "Cannot be modified without explicit Operator decree. Defines zeos identity.",
+      "sync_policy": "must_match"
+    },
+    "L1": {
+      "name": "Module (Binding)",
+      "description": "Extends Kernel with specific behaviors. Once loaded, cannot be overridden by Profile.",
+      "sync_policy": "must_match"
+    },
+    "L1S": {
+      "name": "Structural (Registry)",
+      "description": "System-level registries. Apps may add entries but not modify Core entries.",
+      "sync_policy": "core_entries_must_match"
+    },
+    "L1T": {
+      "name": "Operational (Tools)",
+      "description": "Automation tools. Apps should prefer latest from Core.",
+      "sync_policy": "warn_if_outdated"
+    },
+    "L2T": {
+      "name": "Template (Profiles)",
+      "description": "Default templates for new operators. Operators may customize.",
+      "sync_policy": "no_sync_required"
+    }
+  },
+  "components": {
+    "kernel": [
+      {
+        "path": "kernel/SOUL.md",
+        "criticality": "L0",
+        "version": "4.1.0",
+        "required": true,
+        "auto_load": true,
+        "description": "Core values, constraints, identity"
+      },
+      {
+        "path": "kernel/BOOT_PROTOCOL.md",
+        "criticality": "L0",
+        "version": "4.4.0",
+        "required": true,
+        "auto_load": true,
+        "description": "Boot sequence specification"
+      },
+      {
+        "path": "kernel/ZEOS_MANIFEST.json",
+        "criticality": "L0",
+        "version": "2.0.0",
+        "required": true,
+        "auto_load": false,
+        "description": "This file \u2014 the System Ledger"
+      },
+      {
+        "path": "kernel/SESSION_REGISTRY.json",
+        "criticality": "L1S",
+        "version": "1.0.0",
+        "required": true,
+        "auto_load": false,
+        "description": "Session Semaphore for Swarm concurrency control"
+      }
+    ],
+    "modules": [
+      {
+        "path": "modules/constraints/ZEOS_MODULE_002_SHELL_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "3.1.0",
+        "required": true,
+        "auto_load": true,
+        "module_id": "shell-protocol",
+        "description": "Command vocabulary \u2014 auto-loads on every boot"
+      },
+      {
+        "path": "modules/constraints/ZEOS_MODULE_003_CONTINUITY_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "1.1.0",
+        "required": true,
+        "auto_load": true,
+        "module_id": "continuity-protocol",
+        "description": "Continuous persistence modes \u2014 auto-loads on every boot"
+      },
+      {
+        "path": "modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": true,
+        "auto_load": false,
+        "module_id": "journal-schema",
+        "description": "Session journal file naming, frontmatter, and checkpoint format"
+      },
+      {
+        "path": "modules/constraints/PROFESSIONAL_STANDARD.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "module_id": "professional-standard",
+        "description": "Quality constraints \u2014 optional load"
+      },
+      {
+        "path": "modules/protocols/NEW_APP_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "2.1.0",
+        "required": true,
+        "auto_load": false,
+        "module_id": "new-app-protocol",
+        "description": "Venture scaffolding protocol"
+      },
+      {
+        "path": "modules/protocols/MISSION_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "module_id": "mission-protocol",
+        "description": "Session Governance: Resumability Contract and Anti-Patterns"
+      },
+      {
+        "path": "modules/constraints/ZEOS_MODULE_010_TEAM_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "module_id": "team-protocol",
+        "load_trigger": "/team activate",
+        "description": "Multi-agent team governance — loaded on /team activate"
+      },
+      {
+        "path": "modules/protocols/TEAM_STRATEGY_PROTOCOL.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "module_id": "team-strategy",
+        "load_trigger": "/team activate",
+        "description": "Team behavioral patterns — subscribe loops, ACK, write prevention, agent quirks"
+      },
+      {
+        "path": "modules/commands/TEAM_COMMANDS.md",
+        "criticality": "L1",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "module_id": "team-commands",
+        "load_trigger": "/team activate",
+        "description": "Shell Protocol extension for /team command family"
+      }
+    ],
+    "registry": [
+      {
+        "path": "apps/REGISTRY.json",
+        "criticality": "L1S",
+        "version": "1.2.1",
+        "required": true,
+        "auto_load": false,
+        "description": "Fleet registry \u2014 apps may add entries"
+      }
+    ],
+    "tools": [
+      {
+        "path": "tools/scaffold.py",
+        "criticality": "L1T",
+        "version": "3.1.0",
+        "required": false,
+        "auto_load": false,
+        "description": "Venture scaffolding tool with retrofit capability and dynamic repo detection"
+      },
+      {
+        "path": "tools/fleet.py",
+        "criticality": "L1T",
+        "version": "2.0.0",
+        "required": false,
+        "auto_load": false,
+        "description": "Fleet Compliance Officer with dynamic repo detection"
+      },
+      {
+        "path": "tools/lock_manager.py",
+        "criticality": "L1T",
+        "version": "1.0.0",
+        "required": false,
+        "auto_load": false,
+        "description": "Session Semaphore implementation for concurrent operations"
+      }
+    ],
+    "templates": [
+      {
+        "path": "profiles/template/PROFILE.md",
+        "criticality": "L2T",
+        "version": "1.0.0",
+        "required": true,
+        "auto_load": false,
+        "description": "Consolidated profile template (replaces MISSION.md + PREFERENCES.md)"
+      }
+    ],
+    "development_reference": [
+      {
+        "path": "apps/zeos-dev/docs/ZEOS_ARCH_SPEC.md",
+        "criticality": "reference",
+        "version": "1.0.1",
+        "required": false,
+        "auto_load": false,
+        "description": "Architecture constitution \u2014 loaded during zeos development only"
+      },
+      {
+        "path": "apps/zeos-dev/docs/SECRETS_MODEL.md",
+        "criticality": "reference",
+        "version": "2.0.0",
+        "required": false,
+        "auto_load": false,
+        "description": "Security architecture \u2014 loaded during zeos development only"
+      },
+      {
+        "path": "apps/zeos-dev/docs/CAPABILITY_REGISTRY.json",
+        "criticality": "reference",
+        "version": "2.0.0",
+        "required": false,
+        "auto_load": false,
+        "description": "System capabilities \u2014 loaded during zeos development only"
+      }
+    ]
+  },
+  "excluded_from_core": {
+    "app_souls": "apps/*/SOUL.md \u2014 Federated, apps own these",
+    "operator_profiles": "profiles/{operator_id}/* \u2014 Per-operator",
+    "session_journals": "*/session-journals/* \u2014 Ephemeral",
+    "documentation": "docs/* \u2014 Reference only",
+    "infrastructure": "lambda/*, web-client/* \u2014 Deployment-specific"
+  },
+  "upgrade_commands": {
+    "status": "/fleet --status",
+    "check": "/fleet --drift",
+    "retrofit": "+retrofit <app_id>"
+  },
+  "statistics": {
+    "total_core_files": 17,
+    "kernel_files": 4,
+    "module_files": 9,
+    "registry_files": 1,
+    "tool_files": 3,
+    "template_files": 1,
+    "reference_files": 3
+  },
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2025-12-24",
+      "changes": [
+        "Initial manifest creation"
+      ]
+    },
+    {
+      "version": "2.0.0",
+      "date": "2026-01-03",
+      "changes": [
+        "PUBLIC RELEASE REFACTOR: Removed ARCH_SPEC, SECRETS_MODEL, CAPABILITY_REGISTRY from kernel section",
+        "Added development_reference section for architecture docs in apps/zeos-dev/docs/",
+        "Updated template section to reflect PROFILE.md consolidation",
+        "Added CONTINUITY_PROTOCOL to modules (auto-load)",
+        "Updated all version numbers to match actual files",
+        "Updated tool versions for dynamic repo detection (v3.0.0, v2.0.0)",
+        "Changed upgrade_commands to use /fleet instead of +upgrade"
+      ]
+    },
+    {
+      "version": "2.1.0",
+      "date": "2026-01-03",
+      "changes": [
+        "Updated BOOT_PROTOCOL to v4.2.0 (Project mode, removed profile journals)",
+        "Updated SHELL_PROTOCOL to v3.1.0 (fixed journal routing table)"
+      ]
+    },
+    {
+      "version": "2.2.0",
+      "date": "2026-01-05",
+      "changes": [
+        "Added ZEOS_MODULE_004_JOURNAL_SCHEMA.md to modules",
+        "Updated BOOT_PROTOCOL to v4.4.0 (journal schema integration in Step 4)",
+        "Updated scaffold.py to v3.1.0 (journal schema compliance)"
+      ]
+    },
+    {
+      "version": "2.3.0",
+      "date": "2026-02-08",
+      "changes": [
+        "Added ZEOS_MODULE_010_TEAM_PROTOCOL.md — multi-agent team governance",
+        "Added TEAM_STRATEGY_PROTOCOL.md — behavioral patterns for team agents",
+        "Added TEAM_COMMANDS.md — /team command family (Shell Protocol extension)",
+        "Module count: 6 → 9, Total core files: 14 → 17"
+      ]
+    }
+  ]
+}

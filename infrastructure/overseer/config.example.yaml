@@ -1,0 +1,28 @@
+# Overseer Configuration
+# Copy to ~/.overseer/config.yaml
+
+agents:
+  claude:
+    tmux_session: "claude"
+    type: "claude-code"
+    description: "Claude Code (Anthropic)"
+
+  gemini:
+    tmux_session: "gemini"
+    type: "gemini-cli"
+    description: "Gemini CLI (Google)"
+
+  codex:
+    tmux_session: "codex"
+    type: "openai-codex"
+    description: "Codex CLI (OpenAI)"
+
+relay:
+  database: "~/.overseer/relay.db"
+  max_messages: 1000
+  retention_hours: 24
+
+capture:
+  default_lines: 200
+  max_lines: 1000
+  strip_ansi: true

@@ -1,0 +1,22 @@
+{
+  "name": "@zeos/filesystem-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for zeos filesystem operations",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "bin": {
+    "zeos-filesystem-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@zeos/mcp-shared": "workspace:*"
+  },
+  "devDependencies": {}
+}

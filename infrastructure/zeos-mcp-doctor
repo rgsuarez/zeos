@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# zeos-mcp-doctor — fleet preflight runner for all configured MCP servers.
+#
+# Runs --check against each launcher, reports a green/red table, and exits
+# nonzero if any server is broken. Designed to be the first thing an operator
+# runs after `brew upgrade`, after a system reboot, or when /mcp shows nothing.
+#
+# Usage:
+#   infrastructure/zeos-mcp-doctor              # checks zeos-managed MCPs
+#   infrastructure/zeos-mcp-doctor --verbose    # include log paths
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ZEOS_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+VERBOSE=0
+[ "${1:-}" = "--verbose" ] && VERBOSE=1
+
+# Servers managed by zeos. Each line: <component>|<launcher_path>
+SERVERS=(
+  "inject|$ZEOS_REPO_ROOT/infrastructure/inject/bin/launch"
+  "overseer|$ZEOS_REPO_ROOT/infrastructure/overseer/bin/launch"
+)
+
+# External MCP servers we just sanity-check (not zeos-managed but useful signal).
+# Each line: <component>|<binary_path>
+EXTERNAL=(
+  "vantage|/usr/local/bin/vantage-mcp"
+)
+
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; DIM='\033[2m'; RESET='\033[0m'
+overall_exit=0
+
+printf '\n%bzeos MCP doctor%b — preflight all configured MCP servers\n\n' "$DIM" "$RESET"
+printf '  %-12s %-10s %s\n' "COMPONENT" "STATUS" "DETAIL"
+printf '  %-12s %-10s %s\n' "─────────" "──────" "──────"
+
+for entry in "${SERVERS[@]}"; do
+  IFS='|' read -r component launcher <<< "$entry"
+  if [ ! -x "$launcher" ]; then
+    printf "  %-12s ${RED}%-10s${RESET} %s\n" "$component" "MISSING" "launcher not executable: $launcher"
+    overall_exit=1
+    continue
+  fi
+  if output="$("$launcher" --check 2>&1)"; then
+    detail="$(echo "$output" | tail -1 | sed 's/^OK //')"
+    printf "  %-12s ${GREEN}%-10s${RESET} %s\n" "$component" "OK" "$detail"
+  else
+    rc=$?
+    printf "  %-12s ${RED}%-10s${RESET} (exit %d)\n" "$component" "BROKEN" "$rc"
+    echo "$output" | sed 's/^/      /' | head -4
+    overall_exit=1
+  fi
+done
+
+for entry in "${EXTERNAL[@]}"; do
+  IFS='|' read -r component binary <<< "$entry"
+  if [ -x "$binary" ]; then
+    printf "  %-12s ${GREEN}%-10s${RESET} %s\n" "$component" "OK" "external $binary"
+  else
+    printf "  %-12s ${YELLOW}%-10s${RESET} %s\n" "$component" "ABSENT" "$binary not found (external — not zeos-managed)"
+  fi
+done
+
+if [ "$VERBOSE" -eq 1 ]; then
+  printf '\n  %slogs:%s %s/Library/Logs/zeos-mcp/{inject,overseer}.log\n' "$DIM" "$RESET" "$HOME"
+fi
+
+if [ "$overall_exit" -eq 0 ]; then
+  printf '\n%ball MCP servers healthy%b\n\n' "$GREEN" "$RESET"
+else
+  printf '\n%bone or more MCP servers BROKEN%b — see docs/MCP_RESILIENCE.md\n\n' "$RED" "$RESET"
+fi
+
+exit $overall_exit

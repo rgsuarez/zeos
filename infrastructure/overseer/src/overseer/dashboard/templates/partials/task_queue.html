@@ -1,0 +1,29 @@
+{# Task queue partial - renders list of tasks #}
+{% if tasks %}
+{% for task in tasks %}
+<div class="bg-gray-700 rounded p-2 border-l-4
+    {% if task.priority == 'high' or task.priority == 'critical' %}border-red-500
+    {% elif task.priority == 'medium' %}border-yellow-500
+    {% else %}border-gray-500{% endif %}">
+
+    <div class="flex justify-between items-start">
+        <span class="font-mono text-xs text-blue-400">{{ task.task_id[:20] }}</span>
+        <span class="text-xs px-1.5 py-0.5 rounded
+            {% if task.priority == 'high' or task.priority == 'critical' %}bg-red-900 text-red-300
+            {% elif task.priority == 'medium' %}bg-yellow-900 text-yellow-300
+            {% else %}bg-gray-600 text-gray-300{% endif %}">
+            {{ task.priority }}
+        </span>
+    </div>
+
+    <p class="text-sm text-gray-300 mt-1 line-clamp-2">{{ task.description[:100] }}{% if task.description|length > 100 %}...{% endif %}</p>
+
+    <div class="flex justify-between items-center mt-2 text-xs text-gray-500">
+        <span>-> {{ task.assigned_to or 'unassigned' }}</span>
+        <span>{{ task.timestamp[:16] if task.timestamp else '' }}</span>
+    </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="text-gray-500 text-sm">No pending tasks</p>
+{% endif %}

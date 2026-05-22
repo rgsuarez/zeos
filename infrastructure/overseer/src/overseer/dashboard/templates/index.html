@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Overseer Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <header class="bg-gray-800 border-b border-gray-700 p-4">
+        <div class="flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold">Overseer Dashboard</h1>
+                <p class="text-gray-400 text-sm">Multi-agent visibility — one pane of glass</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <label for="team-filter" class="text-sm text-gray-400">Team:</label>
+                <input type="text" id="team-filter" placeholder="All teams"
+                       class="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm w-20 text-center"
+                       onchange="applyTeamFilter()">
+                <button onclick="applyTeamFilter()"
+                        class="px-3 py-1 bg-blue-600 rounded hover:bg-blue-500 text-sm">
+                    Filter
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- Agents Panel -->
+        <section class="lg:col-span-2 bg-gray-800 rounded-lg p-4">
+            <h2 class="text-lg font-semibold mb-4">Agents</h2>
+            <div id="agents-container"
+                 hx-get="/api/agents"
+                 hx-trigger="load, every 5s"
+                 hx-swap="innerHTML"
+                 class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <p class="text-gray-500">Loading agents...</p>
+            </div>
+        </section>
+
+        <!-- Task Queue Panel -->
+        <section class="bg-gray-800 rounded-lg p-4">
+            <h2 class="text-lg font-semibold mb-4">Task Queue</h2>
+            <div id="tasks-container"
+                 hx-get="/api/tasks"
+                 hx-trigger="load, every 10s"
+                 hx-swap="innerHTML"
+                 class="space-y-2 max-h-96 overflow-y-auto">
+                <p class="text-gray-500">Loading tasks...</p>
+            </div>
+        </section>
+
+        <!-- Relay Log Panel (full width) -->
+        <section class="lg:col-span-3 bg-gray-800 rounded-lg p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold">Relay Log</h2>
+                <div class="space-x-2">
+                    <button id="pause-btn" onclick="togglePause()"
+                            class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 text-sm">
+                        Pause
+                    </button>
+                    <button onclick="clearLog()"
+                            class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 text-sm">
+                        Clear
+                    </button>
+                </div>
+            </div>
+            <div id="relay-log" class="font-mono text-sm bg-gray-950 rounded p-3 h-64 overflow-y-auto">
+                <p class="text-gray-500">Connecting to relay stream...</p>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // SSE connection for relay log
+        let eventSource = null;
+        let paused = false;
+
+        // Get team_id from URL if present
+        const urlParams = new URLSearchParams(window.location.search);
+        const initialTeamId = urlParams.get('team_id');
+        let currentTeamId = initialTeamId;
+
+        // Build stream URL with optional team filter
+        function getStreamUrl() {
+            return currentTeamId ? `/api/relay/stream?team_id=${currentTeamId}` : '/api/relay/stream';
+        }
+
+        // Apply team filter from input
+        function applyTeamFilter() {
+            const input = document.getElementById('team-filter');
+            const newTeamId = input.value.trim() || null;
+
+            // Update URL without reload
+            const url = new URL(window.location);
+            if (newTeamId) {
+                url.searchParams.set('team_id', newTeamId);
+            } else {
+                url.searchParams.delete('team_id');
+            }
+            window.history.replaceState({}, '', url);
+
+            // Reconnect SSE with new filter
+            currentTeamId = newTeamId;
+            if (eventSource) {
+                eventSource.close();
+            }
+            clearLog();
+            connectSSE();
+        }
+
+        // Initialize team filter input from URL param
+        document.addEventListener('DOMContentLoaded', function() {
+            if (initialTeamId) {
+                document.getElementById('team-filter').value = initialTeamId;
+            }
+        });
+
+        function connectSSE() {
+            const streamUrl = getStreamUrl();
+            eventSource = new EventSource(streamUrl);
+
+            eventSource.onmessage = function(event) {
+                if (paused) return;
+                const data = JSON.parse(event.data);
+                const log = document.getElementById('relay-log');
+                const entry = document.createElement('div');
+                entry.className = getTypeColor(data.type);
+                entry.innerHTML = `<span class="text-gray-500">${data.timestamp?.slice(11,19) || ''}</span> ` +
+                                  `<span class="text-blue-400">${data.agent}</span> → ` +
+                                  `<span class="text-yellow-400">${data.type}</span> ` +
+                                  `<span class="text-gray-300">${(data.content || '').slice(0, 80)}</span>`;
+                log.appendChild(entry);
+                log.scrollTop = log.scrollHeight;
+
+                // Keep only last 100 entries
+                while (log.children.length > 100) {
+                    log.removeChild(log.firstChild);
+                }
+            };
+
+            eventSource.onerror = function() {
+                console.log('SSE connection lost, reconnecting...');
+                setTimeout(connectSSE, 3000);
+            };
+        }
+
+        function getTypeColor(type) {
+            const colors = {
+                'heartbeat': 'text-green-400',
+                'task_assign': 'text-purple-400',
+                'task_complete': 'text-blue-400',
+                'task_accept': 'text-cyan-400',
+                'error': 'text-red-400',
+                'status': 'text-gray-400'
+            };
+            return colors[type] || 'text-gray-300';
+        }
+
+        function togglePause() {
+            paused = !paused;
+            document.getElementById('pause-btn').textContent = paused ? 'Resume' : 'Pause';
+        }
+
+        function clearLog() {
+            document.getElementById('relay-log').innerHTML = '';
+        }
+
+        // Start SSE on page load
+        connectSSE();
+    </script>
+</body>
+</html>

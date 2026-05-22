@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# zeos overseer MCP launcher — preflight-aware, vendor-resilient.
+#
+# Resolves a Python interpreter that can import overseer.server and
+# execs `python -u -m overseer.server`. Supports --check for preflight.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OVERSEER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+COMPONENT="overseer"
+VENV_PYTHON="$OVERSEER_DIR/.venv/bin/python"
+
+# Candidate Python interpreters in priority order
+CANDIDATES=(
+  "$VENV_PYTHON"
+  "/opt/homebrew/opt/python@3.13/bin/python3.13"
+  "/opt/homebrew/opt/python@3.12/bin/python3.12"
+  "/usr/local/opt/python@3.13/bin/python3.13"
+  "/usr/local/opt/python@3.12/bin/python3.12"
+  "$(command -v python3.13 2>/dev/null || true)"
+  "$(command -v python3.12 2>/dev/null || true)"
+  "$(command -v python3 2>/dev/null || true)"
+)
+
+RUNTIME=""
+for candidate in "${CANDIDATES[@]}"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    if "$candidate" -c "import overseer.server" 2>/dev/null; then
+      RUNTIME="$candidate"
+      break
+    fi
+  fi
+done
+
+if [ -z "$RUNTIME" ]; then
+  printf 'overseer: ERROR no Python interpreter can import overseer.server\n' >&2
+  printf 'overseer: install with: cd %s && uv venv --python 3.12 .venv && uv pip install -e .\n' "$OVERSEER_DIR" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--check" ]; then
+  RT_VERSION="$("$RUNTIME" --version 2>/dev/null | awk '{print $2}')"
+  printf 'OK component=%s runtime=%s version=%s entry=overseer.server\n' \
+    "$COMPONENT" "$RUNTIME" "$RT_VERSION"
+  exit 0
+fi
+
+exec "$RUNTIME" -u -m overseer.server "$@"

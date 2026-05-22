@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# zeos-inject MCP launcher — resilient, vendor-aware, preflighted.
+#
+# Runtime resolution precedence: vendored ~/.local/zeos/node → homebrew → PATH.
+# Used by Claude Code (and any other MCP host) via mcpServers.zeos.command.
+# Also accepts --check for use by zeos-mcp-doctor (preflight-only, no exec).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ZEOS_REPO_ROOT="$(cd "$INJECT_DIR/../.." && pwd)"
+
+# shellcheck source=../../zeos-mcp-launcher-lib.sh
+source "$ZEOS_REPO_ROOT/infrastructure/zeos-mcp-launcher-lib.sh"
+
+COMPONENT="inject"
+ENTRY="$INJECT_DIR/dist/index.js"
+PATH_RESOLVER="$INJECT_DIR/dist/path-resolver.js"
+
+# 1. Resolve runtime
+RUNTIME="$(zeos_mcp_resolve_runtime "$COMPONENT" \
+  "$HOME/.local/zeos/node/bin/node" \
+  "/opt/homebrew/opt/node@22/bin/node" \
+  "$(command -v node 2>/dev/null || true)")"
+
+# 2. Required artifacts
+zeos_mcp_require_file "$COMPONENT" "$ENTRY" \
+  "cd $INJECT_DIR && npm install && npm run build"
+zeos_mcp_require_file "$COMPONENT" "$PATH_RESOLVER" \
+  "cd $INJECT_DIR && npm run build  (post-PR-#1 build artifact missing)"
+
+# 3. --check exits before exec'ing the server
+if [ "${1:-}" = "--check" ]; then
+  RT_VERSION="$("$RUNTIME" --version 2>/dev/null || echo unknown)"
+  printf 'OK component=%s runtime=%s version=%s entry=%s\n' \
+    "$COMPONENT" "$RUNTIME" "$RT_VERSION" "$ENTRY"
+  zeos_mcp_log "$COMPONENT" "preflight_ok" "runtime=$RUNTIME" "version=$RT_VERSION"
+  exit 0
+fi
+
+# 4. Exec — replace this shell so SIGTERM from Claude Code reaches Node directly
+RT_VERSION="$("$RUNTIME" --version 2>/dev/null || echo unknown)"
+zeos_mcp_log "$COMPONENT" "launch" "runtime=$RUNTIME" "version=$RT_VERSION" "entry=$ENTRY"
+exec "$RUNTIME" "$ENTRY" "$@"

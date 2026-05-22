@@ -1,0 +1,30 @@
+{
+  "name": "@zeos/inject",
+  "version": "1.0.0",
+  "description": "zeos context injection MCP server - boot optimization with three-tier memory and auto-curation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "inject": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspect": "node --inspect dist/index.js",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "keywords": ["zeos", "mcp", "context-injection"],
+  "author": "my-org",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
