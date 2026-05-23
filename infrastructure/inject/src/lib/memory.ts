@@ -11,6 +11,13 @@ export interface MemoryEntry {
   importance: number;
   tags: string[];
   refs: string[];
+  /**
+   * Durable audit marker. Set true when this entry was promoted into the
+   * project SOUL via `zeos_soul_promote`. Persisted in the heading as
+   * `[promoted:true]` so subsequent parseMemoryMd/formatMemoryMd cycles
+   * (`/end` writes, curation, archive moves) cannot strip it.
+   */
+  promoted: boolean;
   content: string;
   isArchived: boolean;
 }
@@ -61,13 +68,17 @@ export function formatEntryHeading(entry: MemoryEntry): string {
   let heading = `## ${entry.date}: ${entry.title} [decay:${entry.decay}]`;
   heading += ` [importance:${entry.importance ?? MEMORY_ENTRY_IMPORTANCE_DEFAULT}]`;
   if (entry.tags?.length) heading += ` [tags:${entry.tags.join(",")}]`;
+  // Durable promotion audit marker. Emitted after tags so the trailing token is
+  // easy to scan and the heading stays stable across active <-> archive moves.
+  if (entry.promoted) heading += ` [promoted:true]`;
   return heading;
 }
 
-export function parseEntryHeadingTail(tail: string): Pick<MemoryEntry, "importance" | "tags" | "refs"> {
+export function parseEntryHeadingTail(tail: string): Pick<MemoryEntry, "importance" | "tags" | "refs" | "promoted"> {
   const importanceMatch = tail.match(/\[importance:(\d+)\]/);
   const tagsMatch = tail.match(/\[tags:([^\]]*)\]/);
   const refsMatch = tail.match(/\[refs:([^\]]*)\]/);
+  const promotedMatch = tail.match(/\[promoted:(true|false)\]/i);
 
   return {
     importance: importanceMatch
@@ -75,6 +86,7 @@ export function parseEntryHeadingTail(tail: string): Pick<MemoryEntry, "importan
       : MEMORY_ENTRY_IMPORTANCE_DEFAULT,
     tags: tagsMatch ? normalizeTags(tagsMatch[1]) : [],
     refs: refsMatch ? normalizeStringList(refsMatch[1]) : [],
+    promoted: promotedMatch ? promotedMatch[1].toLowerCase() === "true" : false,
   };
 }
 
@@ -116,6 +128,7 @@ function parseEntries(content: string, isArchived: boolean): MemoryEntry[] {
       importance: headingMeta.importance,
       tags: headingMeta.tags,
       refs: headingMeta.refs,
+      promoted: headingMeta.promoted,
       content: match[5].trim(),
       isArchived,
     });

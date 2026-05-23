@@ -14,7 +14,7 @@ Inject is an MCP (Model Context Protocol) server that compiles zeos context into
 - **Persistence**: Checkpoint and session journaling with Bridge Rule
 - **Parallel Detection**: Identify concurrent agents on projects
 
-## Tools (8)
+## Tools (9)
 
 | Tool | Purpose |
 |------|---------|
@@ -26,6 +26,7 @@ Inject is an MCP (Model Context Protocol) server that compiles zeos context into
 | `zeos_help` | Command reference |
 | `zeos_parallel` | Check for active instances |
 | `zeos_memory_curate` | Curate MEMORY.md entries (stats, list, pin, unpin, delete, promote, merge, find) |
+| `zeos_soul_promote` | Promote a MEMORY entry's doctrinal sections to SOUL.md (dry-run by default) |
 
 ## Installation
 
@@ -134,7 +135,8 @@ inject/
 │       ├── journal.ts     # Session journal scan + atomic stub creation
 │       ├── digest.ts      # Continuity digest parse + carry-forward block
 │       ├── git-snapshot.ts # execFileSync-based git status capture
-│       └── memory-find.ts # Tag-based MEMORY search
+│       ├── memory-find.ts # Tag-based MEMORY search
+│       └── soul-promote.ts # MEMORY -> SOUL promotion (dry-run default, doctrine-only lift)
 ├── tests/
 │   ├── path-resolver.test.mjs
 │   ├── redact.test.mjs
@@ -143,7 +145,8 @@ inject/
 │   ├── git-snapshot.test.mjs
 │   ├── digest.test.mjs
 │   ├── journal.test.mjs
-│   └── memory-find.test.mjs
+│   ├── memory-find.test.mjs
+│   └── soul-promote.test.mjs
 ├── dist/                  # Compiled output (mirrors src/ structure)
 ├── package.json
 └── tsconfig.json
@@ -167,6 +170,20 @@ The Continuity Digest is parsed once from `MEMORY.md` and stripped from the tier
 ### Tag Search
 
 `/memory-curate <project> find <tag1,tag2,...>` searches active and archived MEMORY entries by tag. AND semantics: an entry must carry every requested tag to match. Case-insensitive. Tags are set at `/end` time via the `tags` parameter. Results list each match with its active/archived status, date, title, decay, importance, and tags.
+
+### Promotion Workflow
+
+When an **active** MEMORY.md entry has stabilized into durable project doctrine (typically importance 4 or 5, surviving multiple sessions), promote its doctrinal sections into SOUL.md. Promotion is active-MEMORY-only by design: if an entry has decayed enough to fall into `MEMORY_ARCHIVE.md`, the operator never elevated it to doctrine, and the archive's silence is informative. To promote an archived entry, first restore it to active with `/memory-curate promote <date>`, then run `/promote-soul`. The promotion tool defaults to dry-run so the operator can preview before any write touches identity doctrine.
+
+1. **Identify the entry.** Use `/memory-curate list` or `/memory-curate find <tag>` to find a candidate. Note its date; if multiple entries share that date, note the title for disambiguation.
+2. **Choose the SOUL.md section.** Standard headings: Mission, Current Campaign, Constraints, Identity, Values. Pick the section whose semantics match the entry.
+3. **Preview (dry-run is the default).** Call `mcp__zeos__zeos_soul_promote` (or `/promote-soul <date> <section>`) without `dry_run` or with `dry_run: true`. The tool returns a `[DRY RUN]` preview of the block it would append; no files are written.
+4. **Commit.** If the preview is acceptable, re-invoke with `dry_run: false`. The tool appends a "Promoted from MEMORY <date>: <title>" pointer block under the named section, lifting ONLY the Why and How to Apply content as durable doctrine. The Summary body is NOT promoted; it stays in MEMORY and is reachable via the title pointer. Operational sections (Final Bridge, Next Actions, References, Source Journal, Redactions) are deliberately left in MEMORY and never carried into identity doctrine.
+5. **Audit.** The source MEMORY entry is marked `promoted: true` at the model level and the heading carries `[promoted:true]`. The marker is durable: it round-trips through `parseMemoryMd` / `formatMemoryMd`, survives `/end` writes, curation, and active-to-archive moves. The original entry stays in MEMORY for traceability; the operator may later run `/memory-curate delete` if desired.
+
+The tool is idempotent: calling it again with the same arguments after a successful commit is a no-op (it detects the existing promotion marker in SOUL.md).
+
+If multiple MEMORY entries share the target date and `entry_title` is not supplied, the tool returns an error listing the candidate titles and refuses to write. If the requested SOUL.md section heading does not exist, the tool returns an error rather than fabricating a new section.
 
 ### Payload Compilation
 

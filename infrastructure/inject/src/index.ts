@@ -78,6 +78,7 @@ import {
   type ContinuityDigest,
 } from "./lib/digest.js";
 import { findMemoryByTags } from "./lib/memory-find.js";
+import { promoteMemoryEntryToSoul } from "./lib/soul-promote.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -961,6 +962,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["project", "action"]
       }
+    },
+    {
+      name: "zeos_soul_promote",
+      description: "Promote an ACTIVE MEMORY.md entry to SOUL.md under a specified section. Writes a title pointer line plus the Why and How to Apply sections only (Summary body stays in MEMORY; archived entries are not promotable, surface them with /memory-curate first). Defaults to dry_run=true and returns a preview without writing. Pass dry_run=false to commit. On commit, marks the source MEMORY entry [promoted:true] (durable model-level marker). Idempotent.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          project: {
+            type: "string",
+            description: "Project ID"
+          },
+          entry_date: {
+            type: "string",
+            description: "Date of the MEMORY entry to promote (YYYY-MM-DD)"
+          },
+          entry_title: {
+            type: "string",
+            description: "Required when multiple entries share a date; otherwise optional disambiguator"
+          },
+          section: {
+            type: "string",
+            description: "SOUL.md section heading (e.g., Constraints, Values, Mission)"
+          },
+          dry_run: {
+            type: "boolean",
+            description: "When true (default), return preview without writing. Pass false to commit."
+          }
+        },
+        required: ["project", "entry_date", "section"]
+      }
     }
   ]
 }));
@@ -1291,6 +1322,7 @@ ${formatRedactionNotice(redactions)}
                 importance,
                 tags,
                 refs: redactedRefs,
+                promoted: false,
                 content: memoryEntryContent,
                 isArchived: false
               };
@@ -1342,6 +1374,7 @@ ${formatRedactionNotice(redactions)}
                   importance,
                   tags,
                   refs: redactedRefs,
+                  promoted: false,
                   content: memoryEntryContent,
                   isArchived: false
                 }],
@@ -1412,7 +1445,8 @@ Resume: ${redactedNextActions.text.split('\n')[0]}
 |---------|---------|
 | \`/fleet\` | Portfolio overview from REGISTRY.json |
 | \`/parallel <project>\` | Check for concurrent agents |
-| \`/memory-curate <action>\` | Curate MEMORY.md (stats, pin, merge, delete) |
+| \`/memory-curate <action> [args]\` | Curate MEMORY.md (stats, list, pin, unpin, delete, promote, merge, find) |
+| \`/promote-soul <date> <section>\` | Promote MEMORY entry doctrine (Why + How to Apply) to SOUL.md; dry-run by default |
 | \`/help\` | Show this help |
 
 ## Three-Tier Memory
@@ -1648,6 +1682,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             }
 
             // Merge: combine titles/content, preserve strongest retention metadata, use earlier date.
+            // Promotion marker survives if either source was promoted (audit-preserving union).
             const mergedEntry: MemoryEntry = {
               date: entry1.date < entry2.date ? entry1.date : entry2.date,
               title: `${entry1.title} + ${entry2.title}`,
@@ -1655,6 +1690,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
               importance: Math.max(entry1.importance, entry2.importance),
               tags: [...new Set([...(entry1.tags || []), ...(entry2.tags || [])])],
               refs: [...new Set([...(entry1.refs || []), ...(entry2.refs || [])])],
+              promoted: Boolean(entry1.promoted || entry2.promoted),
               content: `${entry1.content}\n\n---\n\n${entry2.content}`,
               isArchived: false
             };
@@ -1676,6 +1712,55 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
         }
 
         return { content: [{ type: "text", text: result }] };
+      }
+
+      case "zeos_soul_promote": {
+        const project = args?.project as string;
+        const entry_date = args?.entry_date as string;
+        const entry_title = (args?.entry_title as string) || undefined;
+        const section = args?.section as string;
+        const dry_run = args?.dry_run !== false; // default true
+
+        if (!project || !entry_date || !section) {
+          return { content: [{ type: "text", text: "Error: project, entry_date, and section are required" }], isError: true };
+        }
+
+        const app = findProject(project);
+        if (!app) {
+          return { content: [{ type: "text", text: `Error: Project not found: ${project}` }], isError: true };
+        }
+
+        const soulPath = expandPath(resolveSoulPath(app));
+        const memoryPath = expandPath(resolveMemoryPath(app));
+
+        const promoteResult = promoteMemoryEntryToSoul({
+          soulPath,
+          memoryPath,
+          entryDate: entry_date,
+          entryTitle: entry_title,
+          section,
+          dryRun: dry_run,
+        });
+
+        if (promoteResult.error) {
+          return { content: [{ type: "text", text: `Error: ${promoteResult.error}` }], isError: true };
+        }
+
+        if (promoteResult.dryRun) {
+          return {
+            content: [{
+              type: "text",
+              text: `[DRY RUN] Project: ${project} | Section: ${section} | Entry: ${entry_date}${entry_title ? ` (${entry_title})` : ""}\n\n${promoteResult.preview}\n\nTo commit, call again with dry_run=false.`
+            }]
+          };
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: `Promoted MEMORY entry ${entry_date} to SOUL.md section "${section}" for project ${project}. Source MEMORY entry marked [promoted:true].`
+          }]
+        };
       }
 
       default:
