@@ -46,7 +46,7 @@ When an agent boots into a project, it reconstructs the complete mental model fr
 curl -sL https://raw.githubusercontent.com/rgsuarez/zeos/main/tools/install.sh | bash
 ```
 
-This clones zeos to `~/projects/zeos/`, prompts for your profile name, builds the inject MCP server, installs the Overseer MCP server (multi-agent), and installs six slash-commands into Claude Code. Idempotent — safe to re-run.
+This clones zeos to `~/projects/zeos/`, prompts for your profile name, builds the inject MCP server, installs the Overseer MCP server (multi-agent), and installs the zeos slash-commands into Claude Code (currently: `/zeos`, `/project`, `/newproject`, `/snap`, `/end`, `/team`, `/promote-soul`). Idempotent; safe to re-run.
 
 **Prereqs:** git, Node 18+, npm, Python 3.12+, tmux (Overseer's terminal capture). `uv` is optional but preferred for Python venv management.
 
@@ -92,6 +92,7 @@ In Claude Code, after install:
 | `/snap [note]` | Append a checkpoint to the current session journal |
 | `/end` | Close the session: final journal entry + optional commit |
 | `/team <subcommand>` | Multi-agent orchestration (Overseer MCP, tmux paired lanes) |
+| `/promote-soul <date> <section>` | Promote a MEMORY entry's doctrinal sections to SOUL.md (dry-run by default) |
 
 All six are installed as Claude Code skills at `~/.claude/skills/`.
 
@@ -260,7 +261,7 @@ The `inject` MCP server compiles boot payloads efficiently — `/zeos`, `/projec
 }
 ```
 
-Tools exposed by inject: `zeos_boot`, `zeos_load_project`, `zeos_fleet`, `zeos_snap`, `zeos_end_session`, `zeos_help`, `zeos_memory_curate`.
+Tools exposed by inject: `zeos_boot`, `zeos_load_project`, `zeos_fleet`, `zeos_snap`, `zeos_end_session`, `zeos_help`, `zeos_parallel`, `zeos_memory_curate`, `zeos_soul_promote`.
 
 Tools exposed by overseer: messaging, agent registration, team coordination (see `infrastructure/overseer/docs/API_REFERENCE.md`).
 

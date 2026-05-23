@@ -189,7 +189,7 @@ SKILLS_DST="$CLAUDE_DIR/skills"
 mkdir -p "$SKILLS_DST"
 
 # Copy each skill
-for skill in zeos project newproject snap end team; do
+for skill in zeos project newproject snap end team promote-soul; do
     if [ -d "$SKILLS_SRC/$skill" ]; then
         mkdir -p "$SKILLS_DST/$skill"
         cp "$SKILLS_SRC/$skill/SKILL.md" "$SKILLS_DST/$skill/SKILL.md"
@@ -418,7 +418,7 @@ echo "  - Profile: $PROFILE_NAME"
 echo "  - MCP Server: $ZEOS_DIR/infrastructure/inject/"
 echo "  - MCP Config: ~/.claude.json + ~/.mcp.json"
 echo "  - MCP Servers: zeos (inject)$([ "$OVERSEER_INSTALLED" = true ] && echo ', overseer (multi-agent)')"
-echo "  - Skills: ~/.claude/skills/{zeos,project,newproject,snap,end,team}"
+echo "  - Skills: ~/.claude/skills/{zeos,project,newproject,snap,end,team,promote-soul}"
 echo ""
 echo "Available Commands:"
 echo "  /zeos                  Boot zeos"
@@ -427,6 +427,7 @@ echo "  /newproject <id> ...   Register + scaffold a new project (local-first)"
 echo "  /snap [note]           Save progress"
 echo "  /end                   End session"
 echo "  /team <sub>            Multi-agent orchestration (optional)"
+echo "  /promote-soul <date> <section>  Promote a MEMORY entry to SOUL.md (dry-run by default)"
 echo ""
 if [ "$UPDATE_MODE" = false ]; then
     echo "Next Steps:"
