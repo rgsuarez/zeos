@@ -72,7 +72,12 @@ import {
   JOURNAL_SCHEMA_VERSION,
 } from "./lib/journal.js";
 import { getGitSnapshot as _getGitSnapshotByPath } from "./lib/git-snapshot.js";
-import { type ContinuityDigest } from "./lib/digest.js";
+import {
+  parseDigestFromMemory,
+  formatCarryForwardBlock,
+  type ContinuityDigest,
+} from "./lib/digest.js";
+import { findMemoryByTags } from "./lib/memory-find.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -556,11 +561,25 @@ Coordinate to avoid conflicts.
   const memoryPath = resolveMemoryPath(app);
   const memory = loadMemory(journalDir, memoryPath);
 
+  // Parse the prior session's Continuity Digest out of MEMORY.md (if present)
+  // so we can both render it above SOUL and seed the new journal stub with it.
+  const digest = parseDigestFromMemory(memory.tier1_synopsis || "");
+  const carryForwardSection = digest
+    ? `\n---\n\n${formatCarryForwardBlock(digest)}\n`
+    : "";
+
   // Get latest full journal for current session context (BEFORE stub creation)
   const latestJournal = getLatestJournal(journalDir);
 
-  // NOW create journal stub (after reading previous state)
-  const journalStub = createJournalStub(journalDir, agentName, app);
+  // NOW create journal stub (after reading previous state). Seed it with the
+  // carry-forward block when a digest exists; pass empty string otherwise so
+  // the stub stays byte-equivalent to the Phase 1 default shape.
+  const journalStub = _createJournalStubLib(
+    journalDir,
+    agentName,
+    app ?? null,
+    digest ? formatCarryForwardBlock(digest) : ""
+  );
 
   // Register this journal for the session — compound key ensures /snap and /end
   // target THIS agent's journal even when multiple agents work on same project.
@@ -571,14 +590,21 @@ Coordinate to avoid conflicts.
   // auto-resolve agent without requiring explicit param every call.
   _sessionAgents[app.app_id] = agentName;
 
-  // Build memory section
+  // Build memory section. Strip the Continuity Digest from the tier-1 rendering
+  // because it's now rendered above SOUL as `carryForwardSection`; we don't want
+  // it duplicated inside the Long-Term Memory block.
+  const tier1WithoutDigest = (memory.tier1_synopsis || "").replace(
+    /## Continuity Digest\n[\s\S]*?(?=\n## \d{4}|\n---\n|$)/,
+    ""
+  );
+
   let memorySection = "";
 
-  if (memory.tier1_synopsis) {
+  if (tier1WithoutDigest.trim()) {
     memorySection += `
 # Long-Term Memory (MEMORY.md)
 
-${memory.tier1_synopsis}
+${tier1WithoutDigest}
 
 ---
 `;
@@ -636,7 +662,7 @@ ${memory.tier2_sessions.join('\n\n')}
 │ Journal: ${journalStub.padEnd(47)} │
 └─────────────────────────────────────────────────────────────┘
 
-${parallelWarning}# Project SOUL
+${parallelWarning}${carryForwardSection}# Project SOUL
 
 ${soul || `_(no SOUL.md found at ${soulPath} — scaffold with \`/newproject\` or write one manually)_`}
 ${projectClaudeMd ? `
@@ -916,7 +942,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "zeos_memory_curate",
-      description: "Manually curate project MEMORY.md. Actions: stats, merge, delete, promote, pin, unpin, list.",
+      description: "Manually curate project MEMORY.md. Actions: stats, merge, delete, promote, pin, unpin, list, find.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -926,11 +952,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           action: {
             type: "string",
-            description: "Action: stats, merge, delete, promote, pin, unpin, list"
+            description: "Action: stats, merge, delete, promote, pin, unpin, list, find"
           },
           args: {
             type: "string",
-            description: "Action arguments (e.g., dates for merge)"
+            description: "Action arguments. For find: comma-separated tags (AND semantics). For merge: dates."
           }
         },
         required: ["project", "action"]
@@ -1501,6 +1527,25 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             break;
           }
 
+          case "find": {
+            const tags = actionArgs.split(",").map(s => s.trim()).filter(Boolean);
+            if (tags.length === 0) {
+              return { content: [{ type: "text", text: "Error: 'find' requires comma-separated tags in args (e.g., \"foo,bar\")" }], isError: true };
+            }
+            const matches = findMemoryByTags(content, archiveContent, tags);
+            if (matches.length === 0) {
+              result = `# MEMORY.md find: ${project}\n\nNo entries matched tags: ${tags.join(", ")} (AND semantics, searched active + archive).`;
+            } else {
+              result = `# MEMORY.md find: ${project}\n\nTags: ${tags.join(", ")} (AND semantics)\nFound ${matches.length} ${matches.length === 1 ? "entry" : "entries"}:\n\n`;
+              for (const e of matches) {
+                const where = e.isArchived ? "archived" : "active";
+                const tagList = e.tags.length > 0 ? e.tags.join(",") : "(none)";
+                result += `- [${where}] **${e.date}**: ${e.title} [decay:${e.decay}, importance:${e.importance}, tags:${tagList}]\n`;
+              }
+            }
+            break;
+          }
+
           case "pin": {
             const targetDate = actionArgs.trim();
             if (!targetDate) {
@@ -1627,7 +1672,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
           }
 
           default:
-            return { content: [{ type: "text", text: `Unknown action: ${action}. Valid: stats, list, pin, unpin, delete, promote, merge` }], isError: true };
+            return { content: [{ type: "text", text: `Unknown action: ${action}. Valid: stats, list, pin, unpin, delete, promote, merge, find` }], isError: true };
         }
 
         return { content: [{ type: "text", text: result }] };

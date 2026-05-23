@@ -153,6 +153,21 @@ inject/
 
 The MCP server entry (`src/index.ts`) is intentionally thin: configuration, tool registration, and handler dispatch. Pure helpers live under `src/lib/` with matching unit tests under `tests/<module>.test.mjs`. Tests import from compiled `dist/lib/<module>.js`. The split follows the existing `src/path-resolver.ts` precedent.
 
+### Carry-Forward Continuity
+
+When `/project` loads a project, the previous session's Continuity Digest (open threads, decisions, next actions) is now:
+
+1. Rendered at the TOP of the `/project` payload (above SOUL.md) under `## Carry-Forward from Previous Session`.
+2. Seeded into the new journal stub immediately after the standard separator, giving the agent immediate resume context inside its own journal without having to scroll the boot payload.
+
+When no prior digest exists (first session, MEMORY.md is empty), the carry-forward section is omitted from both the payload and the stub (no placeholder noise).
+
+The Continuity Digest is parsed once from `MEMORY.md` and stripped from the tier-1 Long-Term Memory rendering so it is not duplicated.
+
+### Tag Search
+
+`/memory-curate <project> find <tag1,tag2,...>` searches active and archived MEMORY entries by tag. AND semantics: an entry must carry every requested tag to match. Case-insensitive. Tags are set at `/end` time via the `tags` parameter. Results list each match with its active/archived status, date, title, decay, importance, and tags.
+
 ### Payload Compilation
 
 - **Kernel**: Loads from `~/projects/zeos/kernel/lean/` (optimized)

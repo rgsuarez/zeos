@@ -260,7 +260,7 @@ The `inject` MCP server compiles boot payloads efficiently — `/zeos`, `/projec
 }
 ```
 
-Tools exposed by inject: `zeos_boot`, `zeos_load_project`, `zeos_fleet`, `zeos_snap`, `zeos_end_session`, `zeos_help`, `zeos_memory_curate`.
+Tools exposed by inject: `zeos_boot`, `zeos_load_project`, `zeos_fleet`, `zeos_snap`, `zeos_end_session`, `zeos_help`, `zeos_parallel`, `zeos_memory_curate`.
 
 Tools exposed by overseer: messaging, agent registration, team coordination (see `infrastructure/overseer/docs/API_REFERENCE.md`).
 
