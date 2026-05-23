@@ -232,7 +232,7 @@ Core principles that govern decisions when the explicit doctrine is silent.
 *SOUL.md describes WHO the project is — identity, mission, values, constraints. It should change rarely (quarterly at most). For HOW the project operates (build commands, file paths, conventions, anything that changes weekly), see the project's CLAUDE.md.*
 """
 
-JOURNALS_README_TEMPLATE = """# Session Journals — {name}
+JOURNALS_README_TEMPLATE = """# Session Journals - {name}
 
 Append-only session journals for the `{app_id}` project. Written by `/snap`
 and `/end` (or programmatically via the inject MCP server's `zeos_snap` /
@@ -240,15 +240,19 @@ and `/end` (or programmatically via the inject MCP server's `zeos_snap` /
 
 ## Naming
 
-`YYYY-MM-DD-NNN-agent.md` — e.g., `2026-05-21-001-claude.md`
+`YYYY-MM-DD-NNN-agent.md` - e.g., `2026-05-21-001-claude.md`
 
 ## Frontmatter
 
 ```yaml
 ---
+schema_version: "2.0.0"
+session_id: "YYYY-MM-DD-NNN"
+project: "{app_id}"
 date: "YYYY-MM-DD"
 sequence: 1
-agent: claude
+agent: "claude"
+instance: "claude"
 status: active
 created: "YYYY-MM-DDTHH:MM:SSZ"
 ---
@@ -261,34 +265,70 @@ cold with no other context.
 
 ## Why these live in the zeos repo
 
-Session journals are operator-side artifacts — debug attempts, decisions in
+Session journals are operator-side artifacts: debug attempts, decisions in
 flight, working context. Keeping them in the project repo would either leak
 personal context into teammates' clones, require per-machine `.git/info/exclude`
 config, or risk accidental commits. Pinning them to `~/projects/zeos/journals/`
 (gitignored) keeps the project repo clean regardless of who clones it.
+
+## Continuity Packet
+
+Each `/snap` and `/end` should capture:
+
+- Objective
+- State of the world
+- Decisions and assumptions
+- Open threads
+- Verified facts and remaining assumptions
+- Blockers and dead ends
+- Next tactical move
 """
 
 MEMORY_MD_TEMPLATE = """---
+document: "MEMORY"
 project: {app_id}
+purpose: "Rolling synopsis of session work - long-term memory tier"
 token_estimate: 0
 entry_count: 0
+archive_count: 0
 last_updated: "{timestamp}"
 ---
 
-# {name} — MEMORY
+# Project Memory: {name}
 
-Curated mid-term memory for the `{app_id}` project. Add entries as work
-progresses. Each entry should answer: "what would a future agent need to know
-that they can't derive from code, git history, CLAUDE.md, or SOUL.md?"
+## Continuity Digest
 
-Entries carry `[decay:N]` tags — drop entries when N hits 0 unless renewed.
-Default token budget: 10,000. Curate via `/memory-curate` when over.
+### Last 3 Sessions
+*No prior sessions*
 
-## Entries
+### Open Threads
+*None*
 
-<!-- Newest at top. Format:
-## YYYY-MM-DD [decay:N] — short title
-Body...
+### Decisions/Constraints
+*None yet*
+
+### Next Actions
+*None specified*
+
+---
+
+<!-- Newest entries below. Format:
+## YYYY-MM-DD: short title [decay:N] [importance:1-5] [tags:tag-a,tag-b]
+
+### Summary
+...
+
+### Why
+...
+
+### How to Apply
+...
+
+### Final Bridge
+...
+
+### Next Actions
+...
 -->
 """
 

@@ -5,34 +5,34 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
-  ZEOS_APPS_ROOT,
+  ZEOS_JOURNALS_ROOT,
   expandPath,
   resolveJournalPath,
   verifyJournalWritten,
 } from "../dist/path-resolver.js";
 
-test("resolveJournalPath: repo-backed app resolves {repo} to ~/projects/<app_id>/", () => {
+test("resolveJournalPath: repo-backed app resolves to zeos-side journal root", () => {
   const app = {
-    app_id: "awsaudit",
-    local_path: "awsaudit/",
+    app_id: "example-app",
+    local_path: "example-app/",
     journal_location: "{repo}/session-journals/",
-    repo: { url: "https://github.com/zeroechelon/awsaudit" },
+    repo: { url: "https://github.com/example-org/example-app" },
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, "~/projects/awsaudit/session-journals/");
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/example-app/`);
 });
 
-test("resolveJournalPath: zeos-apps-only app (no repo) resolves to ZEOS_APPS_ROOT/<local_path>/", () => {
+test("resolveJournalPath: zeos-apps-only app resolves to zeos-side journal root", () => {
   const app = {
     app_id: "zeos-dev",
     local_path: "zeos-dev/",
     journal_location: "{repo}/session-journals/",
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, `${ZEOS_APPS_ROOT}/zeos-dev/session-journals/`);
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/zeos-dev/`);
 });
 
-test("resolveJournalPath: zeos-apps-only app with repo.url undefined falls back to ZEOS_APPS_ROOT", () => {
+test("resolveJournalPath: repo.url undefined resolves to zeos-side journal root", () => {
   const app = {
     app_id: "internal-tool",
     local_path: "internal-tool/",
@@ -40,37 +40,37 @@ test("resolveJournalPath: zeos-apps-only app with repo.url undefined falls back 
     repo: { branch: "main" },
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, `${ZEOS_APPS_ROOT}/internal-tool/session-journals/`);
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/internal-tool/`);
 });
 
-test("resolveJournalPath: absolute literal path is preserved when no placeholder present", () => {
+test("resolveJournalPath: absolute literal path is ignored in favor of zeos-side journal root", () => {
   const app = {
     app_id: "external",
     local_path: "external/",
     journal_location: "/var/log/zeos/external/",
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, "/var/log/zeos/external/");
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/external/`);
 });
 
-test("resolveJournalPath: home-relative literal path is preserved", () => {
+test("resolveJournalPath: home-relative literal path is ignored in favor of zeos-side journal root", () => {
   const app = {
     app_id: "external",
     local_path: "external/",
     journal_location: "~/somewhere/else/",
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, "~/somewhere/else/");
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/external/`);
 });
 
-test("resolveJournalPath: bare relative literal path is anchored to ZEOS_APPS_ROOT", () => {
+test("resolveJournalPath: bare relative literal path is ignored in favor of zeos-side journal root", () => {
   const app = {
     app_id: "external",
     local_path: "external/",
     journal_location: "external/journals/",
   };
   const result = resolveJournalPath(app);
-  assert.equal(result, `${ZEOS_APPS_ROOT}/external/journals/`);
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/external/`);
 });
 
 test("expandPath: ~/ is expanded to homedir", () => {
@@ -99,59 +99,59 @@ test("verifyJournalWritten: throws for missing file", () => {
   );
 });
 
-test("resolveJournalPath: clone_path overrides app_id-based convention", () => {
+test("resolveJournalPath: clone_path does not affect zeos-side journal root", () => {
   const app = {
     app_id: "zero-echelon",
     local_path: "zero-echelon/",
     journal_location: "{repo}/session-journals/",
     repo: {
-      url: "https://github.com/rgsuarez/zeroechelon-website",
-      clone_path: "~/projects/zeroechelon-website/",
+      url: "https://github.com/example-org/example-website",
+      clone_path: "~/projects/example-website/",
     },
   };
-  assert.equal(resolveJournalPath(app), "~/projects/zeroechelon-website/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/zero-echelon/`);
 });
 
-test("resolveJournalPath: clone_path normalizes missing trailing slash", () => {
+test("resolveJournalPath: clone_path without trailing slash does not affect zeos-side journal root", () => {
   const app = {
     app_id: "zero-echelon",
     local_path: "zero-echelon/",
     journal_location: "{repo}/session-journals/",
     repo: {
-      url: "https://github.com/rgsuarez/zeroechelon-website",
-      clone_path: "~/projects/zeroechelon-website",
+      url: "https://github.com/example-org/example-website",
+      clone_path: "~/projects/example-website",
     },
   };
-  assert.equal(resolveJournalPath(app), "~/projects/zeroechelon-website/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/zero-echelon/`);
 });
 
-test("resolveJournalPath: swords-of-chaos resolves to swords-of-chaos-reborn", () => {
+test("resolveJournalPath: example-game resolves to zeos-side journal root", () => {
   const app = {
-    app_id: "swords-of-chaos",
-    local_path: "swords-of-chaos/",
+    app_id: "example-game",
+    local_path: "example-game/",
     journal_location: "{repo}/session-journals/",
     repo: {
-      url: "https://github.com/rgsuarez/swords-of-chaos-reborn",
-      clone_path: "~/projects/swords-of-chaos-reborn/",
+      url: "https://github.com/example-org/example-game-reborn",
+      clone_path: "~/projects/example-game-reborn/",
     },
   };
-  assert.equal(resolveJournalPath(app), "~/projects/swords-of-chaos-reborn/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/example-game/`);
 });
 
-test("resolveJournalPath: ai-boardroom resolves to aib", () => {
+test("resolveJournalPath: example-board resolves to zeos-side journal root", () => {
   const app = {
-    app_id: "ai-boardroom",
-    local_path: "boardroom/",
+    app_id: "example-board",
+    local_path: "example-board-tree/",
     journal_location: "{repo}/session-journals/",
     repo: {
-      url: "https://github.com/zeroechelon/aib",
-      clone_path: "~/projects/aib/",
+      url: "https://github.com/example-org/example-utility",
+      clone_path: "~/projects/example-utility/",
     },
   };
-  assert.equal(resolveJournalPath(app), "~/projects/aib/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/example-board/`);
 });
 
-test("resolveJournalPath: clone_path takes precedence over repo.url even when app_id matches", () => {
+test("resolveJournalPath: app_id is the only journal routing key", () => {
   const app = {
     app_id: "foo",
     local_path: "foo/",
@@ -161,39 +161,37 @@ test("resolveJournalPath: clone_path takes precedence over repo.url even when ap
       clone_path: "~/somewhere/else/",
     },
   };
-  assert.equal(resolveJournalPath(app), "~/somewhere/else/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/foo/`);
 });
 
-test("resolveJournalPath: awsaudit fallback (repo.url, no clone_path) still works", () => {
+test("resolveJournalPath: example-app fallback uses zeos-side journal root", () => {
   const app = {
-    app_id: "awsaudit",
-    local_path: "awsaudit/",
+    app_id: "example-app",
+    local_path: "example-app/",
     journal_location: "{repo}/session-journals/",
-    repo: { url: "https://github.com/zeroechelon/awsaudit" },
+    repo: { url: "https://github.com/example-org/example-app" },
   };
-  assert.equal(resolveJournalPath(app), "~/projects/awsaudit/session-journals/");
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/example-app/`);
 });
 
-test("resolveJournalPath: zeos-apps-only fallback (no repo) still works", () => {
+test("resolveJournalPath: zeos-apps-only fallback uses zeos-side journal root", () => {
   const app = {
-    app_id: "emeet-tracker",
-    local_path: "emeet-tracker/",
+    app_id: "example-tracker",
+    local_path: "example-tracker/",
     journal_location: "{repo}/session-journals/",
   };
-  assert.equal(resolveJournalPath(app), `${ZEOS_APPS_ROOT}/emeet-tracker/session-journals/`);
+  assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/example-tracker/`);
 });
 
-test("regression: awsaudit-style registry entry no longer routes to zeos-apps", () => {
-  // Mirrors the bug reported by codex-copilot on 2026-04-28:
-  // pre-fix: zeos-apps/awsaudit/session-journals/  ← wrong
-  // post-fix: ~/projects/awsaudit/session-journals/  ← correct
+test("regression: repo-backed registry entry routes to zeos-side journals", () => {
+  // v1.3+ keeps journals in the zeos repo, not in project repos or zeos-apps.
   const app = {
-    app_id: "awsaudit",
-    local_path: "awsaudit/",
+    app_id: "example-app",
+    local_path: "example-app/",
     journal_location: "{repo}/session-journals/",
-    repo: { url: "https://github.com/zeroechelon/awsaudit", branch: "main" },
+    repo: { url: "https://github.com/example-org/example-app", branch: "main" },
   };
   const result = resolveJournalPath(app);
   assert.equal(result.includes("zeos-apps"), false);
-  assert.match(result, /^~\/projects\/awsaudit\/session-journals\/$/);
+  assert.match(result, /^~\/projects\/zeos\/journals\/example-app\/$/);
 });

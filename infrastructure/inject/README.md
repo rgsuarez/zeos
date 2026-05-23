@@ -20,12 +20,12 @@ Inject is an MCP (Model Context Protocol) server that compiles zeos context into
 |------|---------|
 | `zeos_boot` | Boot zeos into Project mode |
 | `zeos_load_project` | Load project context |
-| `zeos_status` | Quick fleet status overview |
 | `zeos_fleet` | Detailed portfolio view |
-| `zeos_checkpoint` | Save progress to journal |
-| `zeos_end_session` | End session with handoff |
+| `zeos_snap` | Save structured progress to journal |
+| `zeos_end_session` | End session, update MEMORY.md, and return handoff |
 | `zeos_help` | Command reference |
 | `zeos_parallel` | Check for active instances |
+| `zeos_memory_curate` | Curate MEMORY.md entries (stats, list, pin, unpin, delete, promote, merge, find) |
 
 ## Installation
 
@@ -81,17 +81,20 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"zeos_boot"
 
 `zeos_snap` and `zeos_end_session` return the **absolute resolved path** of the journal that was written, and verify file existence on disk before reporting success. Contract:
 
-- `zeos_snap` success → `✓ Checkpoint saved to /Users/<user>/projects/<app_id>/session-journals/<file>.md`
-- `zeos_end_session` success → handoff text begins with `Journal: /Users/<user>/projects/<app_id>/session-journals/<file>.md`
-- Either tool throws an MCP error if `fs.existsSync(journalPath)` fails after the write — no false-success path.
+- `zeos_snap` success: `✓ Checkpoint saved to /Users/<user>/projects/zeos/journals/<app_id>/<file>.md`
+- `zeos_end_session` success: handoff text begins with `Journal: /Users/<user>/projects/zeos/journals/<app_id>/<file>.md`
+- Either tool throws an MCP error if `fs.existsSync(journalPath)` fails after the write. No false-success path.
 
-Path resolution for `journal_location: "{repo}/session-journals/"` in `apps/REGISTRY.json` (precedence high → low):
+Persistence paths are centralized by `path-resolver.ts`:
 
-1. `repo.clone_path` is set → use it verbatim. Required when the on-disk clone directory differs from `app_id` (e.g. `zero-echelon` → `~/projects/my-org-website/`). Trailing slash is normalized.
-2. `repo.url` is set (and no `clone_path`) → `~/projects/<app_id>/session-journals/`. Convention: clone dir matches `app_id`.
-3. No `repo` at all → `~/projects/zeos-apps/<local_path>/session-journals/` (zeos-apps shadow tree).
+- Project SOUL: `~/projects/zeos/souls/<app_id>/SOUL.md`
+- MEMORY.md: `~/projects/zeos/memory/<app_id>/MEMORY.md`
+- Journals: `~/projects/zeos/journals/<app_id>/`
+- Project operations doctrine: `<project_root>/CLAUDE.md`
 
-Example registry entry using `clone_path`:
+Journal entries use `schema_version: "2.0.0"` frontmatter. `/snap` accepts a backward-compatible `delta` plus structured continuity fields: `objective`, `state`, `open_threads`, `verified`, `assumed`, `blockers`, `dead_ends`, `next_tactical_move`, and `tags`. `/end` writes a MEMORY.md entry with `decay`, `importance`, `tags`, optional `why`, optional `how_to_apply`, optional `refs`, source journal path, and a redaction notice when secrets were removed before persistence.
+
+Example registry entry:
 
 ```json
 {
@@ -100,8 +103,7 @@ Example registry entry using `clone_path`:
     "url": "https://github.com/my-org/my-repo",
     "branch": "main",
     "clone_path": "~/projects/my-org-website/"
-  },
-  "journal_location": "{repo}/session-journals/"
+  }
 }
 ```
 
@@ -123,18 +125,40 @@ Once configured, use zeos commands in Claude Code:
 ```
 inject/
 ├── src/
-│   └── index.ts       # MCP server implementation
-├── dist/              # Compiled output
+│   ├── index.ts           # MCP server entry + tool handlers
+│   ├── path-resolver.ts   # SOUL/journal/memory/project path resolution
+│   └── lib/               # Pure helpers (independently unit-testable)
+│       ├── redact.ts      # Generic secret redaction (env-style, Bearer, PEM)
+│       ├── bridge.ts      # Continuity Packet sections + normalizers
+│       ├── memory.ts      # MEMORY.md parse/format + curation + constants
+│       ├── journal.ts     # Session journal scan + atomic stub creation
+│       ├── digest.ts      # Continuity digest parse + carry-forward block
+│       ├── git-snapshot.ts # execFileSync-based git status capture
+│       └── memory-find.ts # Tag-based MEMORY search
+├── tests/
+│   ├── path-resolver.test.mjs
+│   ├── redact.test.mjs
+│   ├── bridge.test.mjs
+│   ├── memory.test.mjs
+│   ├── git-snapshot.test.mjs
+│   ├── digest.test.mjs
+│   ├── journal.test.mjs
+│   └── memory-find.test.mjs
+├── dist/                  # Compiled output (mirrors src/ structure)
 ├── package.json
 └── tsconfig.json
 ```
+
+### Module Layout
+
+The MCP server entry (`src/index.ts`) is intentionally thin: configuration, tool registration, and handler dispatch. Pure helpers live under `src/lib/` with matching unit tests under `tests/<module>.test.mjs`. Tests import from compiled `dist/lib/<module>.js`. The split follows the existing `src/path-resolver.ts` precedent.
 
 ### Payload Compilation
 
 - **Kernel**: Loads from `~/projects/zeos/kernel/lean/` (optimized)
 - **Profile**: Loads from `~/projects/zeos/profiles/{profile}/` (fleet table truncated)
-- **Projects**: Context from `~/clawd/projects/{project}/`
-- **Journals**: Written to `~/clawd/projects/{project}/sessions/`
+- **Projects**: Context from `apps/REGISTRY.json`, project SOUL, project CLAUDE.md, MEMORY.md, and latest journals
+- **Journals**: Written to `~/projects/zeos/journals/<app_id>/`
 
 ## Dependencies
 
@@ -144,7 +168,7 @@ inject/
 
 ## License
 
-MIT — my-org
+MIT - my-org
 
 ---
 

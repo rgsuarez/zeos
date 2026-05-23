@@ -22,19 +22,33 @@ mcp__zeos__zeos_end_session({
 })
 ```
 
+**Additional MEMORY parameters (all optional):**
+
+- `title` - explicit one-line title for the MEMORY entry (default: first content line of summary)
+- `tags` - array of retrieval tags for MEMORY entry
+- `importance` - 1-5, defaults to 3 (4+ never auto-archived, surfaces as SOUL promotion candidate)
+- `why` - operator-facing rationale (renders as `### Why` in MEMORY entry)
+- `how_to_apply` - guidance for future sessions (renders as `### How to Apply`)
+- `refs` - array of file paths, PR numbers, or SHAs the entry references
+
 ## Execution Steps
 
 1. **Identify Current Project** - Use the project ID from loaded context
 
-2. **Synthesize Session Summary** - Create brief summary of session accomplishments:
-   - What was the goal?
-   - What was achieved?
-   - Key decisions made?
+2. **Synthesize Session Summary** - Create a MEMORY-ready entry:
+   - Outcome: what changed in the project state.
+   - Decisions: choices made and the rationale.
+   - Persistent concepts: rules, preferences, constraints, or patterns that should survive 10-20 sessions.
+   - Verification: tests, checks, review state, and remaining risk.
 
-3. **Gather Final Delta** - Document any uncommitted work:
-   - Files changed since last snapshot
-   - Pending decisions
-   - Work in progress
+3. **Gather Final Delta** - Write a final Continuity Packet:
+   - Current objective.
+   - State of the world.
+   - Decisions and assumptions.
+   - Open threads.
+   - Verification state.
+   - Next tactical move.
+   - Redact secrets before calling the MCP tool.
 
 4. **Define Next Actions** - Clear handoff for next session:
    - What should be done next?
@@ -43,16 +57,17 @@ mcp__zeos__zeos_end_session({
 
 5. **Call MCP Tool** with all four required fields
 
-6. **Git Operations** (if applicable):
-   - Stage and commit any uncommitted changes
-   - Push to remote if configured
+6. **Git Operations**:
+   - Do not commit or push unless the operator explicitly asked for it or project doctrine specifically authorizes it.
+   - Never use `--no-verify`.
+   - If changes remain local, name that in the final confirmation.
 
 7. **Confirm Session End** - Output confirmation with summary
 
 ## What Gets Updated
 
 - **Session Journal**: Marked as `status: complete`, final entry added
-- **MEMORY.md**: Session summary appended (long-term memory)
+- **MEMORY.md**: Structured summary, final bridge, next actions, source journal, and redaction notice appended
 
 ## Arguments
 

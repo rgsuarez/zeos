@@ -27,8 +27,52 @@ import {
   resolveMemoryPath as resolverResolveMemoryPath,
   resolveSoulPath as resolverResolveSoulPath,
   resolveProjectClaudeMdPath as resolverResolveProjectClaudeMdPath,
+  resolveProjectRoot as resolverResolveProjectRoot,
   verifyJournalWritten,
 } from "./path-resolver.js";
+import {
+  redactSensitiveText,
+  mergeRedactions,
+  formatRedactionNotice,
+  type RedactionResult,
+} from "./lib/redact.js";
+import {
+  buildBridgeContent,
+  normalizeTags,
+  normalizeStringList,
+  clampImportance,
+  formatListSection,
+  titleFromSummary,
+  stripListMarker,
+  firstContentLine,
+  type BridgeSections,
+} from "./lib/bridge.js";
+import {
+  MEMORY_ENTRY_DECAY_DEFAULT,
+  MEMORY_ENTRY_IMPORTANCE_DEFAULT,
+  MEMORY_PROMOTION_IMPORTANCE_THRESHOLD,
+  parseMemoryMd,
+  formatMemoryMd,
+  formatMemoryEntryContent,
+  ageMemoryEntries,
+  curateMemory,
+  memoryRetentionScore,
+  getMemoryTokenLimit as _getMemoryTokenLimitFromContent,
+  estimateTokens,
+  formatEntryHeading,
+  parseEntryHeadingTail,
+  type MemoryEntry,
+  type ParsedMemory,
+} from "./lib/memory.js";
+import {
+  extractJournalSummary,
+  getLatestJournal,
+  createJournalStub as _createJournalStubLib,
+  checkParallelInstances,
+  JOURNAL_SCHEMA_VERSION,
+} from "./lib/journal.js";
+import { getGitSnapshot as _getGitSnapshotByPath } from "./lib/git-snapshot.js";
+import { type ContinuityDigest } from "./lib/digest.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -37,6 +81,8 @@ import {
 const ZEOS_ROOT = "~/projects/zeos";
 const REGISTRY_PATH = `${ZEOS_ROOT}/apps/REGISTRY.json`;
 const DEFAULT_PROFILE = "operator";
+// JOURNAL_SCHEMA_VERSION, MEMORY_ENTRY_DECAY_DEFAULT, MEMORY_ENTRY_IMPORTANCE_DEFAULT,
+// MEMORY_PROMOTION_IMPORTANCE_THRESHOLD are imported from src/lib/journal.ts and src/lib/memory.ts.
 
 // Session registry: maps "project_id::agent" -> journal filename.
 // Uses compound key to support parallel agents on same project even when
@@ -124,202 +170,21 @@ function releaseMemoryLock(memoryPath: string): void {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MEMORY CURATION UTILITIES
+// MEMORY CURATION UTILITIES (extracted to src/lib/memory.ts)
 // ═══════════════════════════════════════════════════════════════
 
-interface MemoryEntry {
-  date: string;
-  title: string;
-  decay: number;
-  content: string;
-  isArchived: boolean;
-}
-
-interface ParsedMemory {
-  frontmatter: Record<string, any>;
-  projectName: string;
-  entries: MemoryEntry[];
-  archivedEntries: MemoryEntry[]; // Keep this for zeos_memory_curate to handle both
-  continuityDigest?: string;       // Raw digest section if present
-}
-
-function estimateTokens(text: string): number {
-  // Markdown/YAML-heavy content averages ~1.8 tokens per word
-  // (punctuation, brackets, colons, dashes all tokenize separately)
-  const words = text.split(/\s+/).length;
-  return Math.ceil(words * 1.8);
-}
-
-/**
- * Extract summary section from a journal using multi-pattern matching.
- * Handles all known journal formats across the portfolio:
- *   - ### Summary (current /end format, h3)
- *   - ## Session Summary (legacy, h2)
- *   - ## Executive Summary (legacy example-project/zeos-dev, h2)
- *   - ## Summary (mid-era, h2)
- *   - ## Mission Summary (example-game, h2)
- *   - ## {Qualifier} Summary (various legacy variants)
- *
- * Returns the summary body text, or null if no summary section found.
- */
-function extractJournalSummary(content: string): string | null {
-  // Try patterns in priority order (most specific/current first)
-  const patterns = [
-    /### Summary\n([\s\S]*?)(?=\n###|\n## |$)/,         // Current /end format (h3)
-    /## Session Summary\n([\s\S]*?)(?=\n## |\n# |$)/,   // Legacy standard (h2)
-    /## Executive Summary\n([\s\S]*?)(?=\n## |\n# |$)/, // Legacy example-project (h2)
-    /## Mission Summary\n([\s\S]*?)(?=\n## |\n# |$)/,   // example-game (h2)
-    /## Summary\n([\s\S]*?)(?=\n## |\n# |$)/,           // Mid-era generic (h2)
-    /## \w[\w\s]* Summary\n([\s\S]*?)(?=\n## |\n# |$)/, // Any "## {Word} Summary" variant
-  ];
-
-  for (const pattern of patterns) {
-    const match = content.match(pattern);
-    if (match && match[1] && match[1].trim().length > 0) {
-      return match[1].trim();
-    }
-  }
-
-  return null;
-}
-
-function parseMemoryMd(content: string, archiveContent: string = ""): ParsedMemory {
-  const result: ParsedMemory = {
-    frontmatter: {},
-    projectName: "",
-    entries: [],
-    archivedEntries: []
-  };
-
-  // Parse frontmatter from active memory
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (fmMatch) {
-    const fmLines = fmMatch[1].split('\n');
-    for (const line of fmLines) {
-      const [key, ...valueParts] = line.split(':');
-      if (key && valueParts.length) {
-        const value = valueParts.join(':').trim().replace(/^["']|["']$/g, '');
-        result.frontmatter[key.trim()] = isNaN(Number(value)) ? value : Number(value);
-      }
-    }
-  }
-
-  // Extract project name from header
-  const nameMatch = content.match(/# Project Memory: (.+)/);
-  if (nameMatch) {
-    result.projectName = nameMatch[1];
-  }
-
-  // Extract continuity digest if present
-  const digestMatch = content.match(/## Continuity Digest\n\n([\s\S]*?)(?=\n## \d{4}|$)/);
-  if (digestMatch) {
-    result.continuityDigest = digestMatch[0];
-  }
-
-  // Parse active entries (skip the digest section)
-  const entryRegex = /## (\d{4}-\d{2}-\d{2}): (.+?) \[decay:(\d+)\]\n\n([\s\S]*?)(?=\n---|\n## \d{4}|## Continuity|$)/g;
-
-  let match;
-  while ((match = entryRegex.exec(content)) !== null) {
-    result.entries.push({
-      date: match[1],
-      title: match[2],
-      decay: parseInt(match[3], 10),
-      content: match[4].trim(),
-      isArchived: false
-    });
-  }
-
-  // Parse archived entries from archiveContent
-  if (archiveContent) {
-    entryRegex.lastIndex = 0;
-    while ((match = entryRegex.exec(archiveContent)) !== null) {
-      result.archivedEntries.push({
-        date: match[1],
-        title: match[2],
-        decay: parseInt(match[3], 10),
-        content: match[4].trim(),
-        isArchived: true
-      });
-    }
-  }
-
-  return result;
-}
-
-function formatMemoryMd(parsed: ParsedMemory, type: 'active' | 'archive' = 'active'): string {
-  if (type === 'archive') {
-    let output = `# Project Memory Archive: ${parsed.projectName}\n\n`;
-    output += `*Cold storage for project memory entries moved from MEMORY.md*\n\n---\n\n`;
-    for (const entry of parsed.archivedEntries) {
-      output += `## ${entry.date}: ${entry.title} [decay:${entry.decay}]\n\n`;
-      output += `${entry.content}\n\n`;
-      output += '---\n\n';
-    }
-    return output;
-  }
-
-  // Update counts
-  parsed.frontmatter.entry_count = parsed.entries.length;
-  parsed.frontmatter.archive_count = parsed.archivedEntries.length;
-
-  // Calculate token estimate for ALL content (entries + digest + header)
-  let allContent = `# Project Memory: ${parsed.projectName}\n\n`;
-  if (parsed.continuityDigest) {
-    allContent += parsed.continuityDigest;
-  }
-  for (const entry of parsed.entries) {
-    allContent += `## ${entry.date}: ${entry.title} [decay:${entry.decay}]\n\n${entry.content}\n\n---\n\n`;
-  }
-  parsed.frontmatter.token_estimate = estimateTokens(allContent);
-
-  // Build frontmatter
-  let output = '---\n';
-  for (const [key, value] of Object.entries(parsed.frontmatter)) {
-    if (typeof value === 'string') {
-      output += `${key}: "${value}"\n`;
-    } else {
-      output += `${key}: ${value}\n`;
-    }
-  }
-  output += '---\n\n';
-
-  // Add header
-  output += `# Project Memory: ${parsed.projectName}\n\n`;
-
-  // Add continuity digest if present (goes first after header)
-  if (parsed.continuityDigest) {
-    output += parsed.continuityDigest.trimEnd() + '\n\n';
-  }
-
-  // Add active entries
-  for (const entry of parsed.entries) {
-    output += `## ${entry.date}: ${entry.title} [decay:${entry.decay}]\n\n`;
-    output += `${entry.content}\n\n`;
-    output += '---\n\n';
-  }
-
-  return output;
-}
-
+// Wrapper preserving the original profile-name signature; reads the profile
+// file via the existing helper, then delegates parsing to the pure lib helper.
 function getMemoryTokenLimit(profileName: string = DEFAULT_PROFILE): number {
   const profilePath = `${ZEOS_ROOT}/profiles/${profileName}/PROFILE.md`;
-  const content = readFile(profilePath);
-  const match = content.match(/memory_token_limit:\s*(\d+)/);
-  return match ? parseInt(match[1], 10) : 10000; // Default 10,000
-}
-
-interface ContinuityDigest {
-  lastSessions: string[];    // Last 3 session summaries
-  openThreads: string[];     // Unresolved items
-  decisions: string[];       // Key decisions/constraints
-  nextActions: string[];     // Ordered next steps
+  return _getMemoryTokenLimitFromContent(readFile(profilePath));
 }
 
 function generateContinuityDigest(
   journalDir: string,
   currentSummary: string,
-  nextActions: string
+  nextActions: string,
+  finalBridge: string = ""
 ): ContinuityDigest {
   const expanded = expandPath(journalDir);
   const digest: ContinuityDigest = {
@@ -350,14 +215,14 @@ function generateContinuityDigest(
     }
   }
 
-  // Extract open threads from nextActions (lines starting with - [ ] or TODO)
-  const actionLines = nextActions.split('\n');
+  // Extract open threads from nextActions and the final bridge.
+  const actionLines = `${nextActions}\n${finalBridge}`.split('\n');
   for (const line of actionLines) {
     const trimmed = line.trim();
     if (trimmed.startsWith('- [ ]') || trimmed.toLowerCase().includes('todo')) {
-      digest.openThreads.push(trimmed.replace(/^-\s*\[\s*\]\s*/, '').trim());
-    } else if (trimmed.startsWith('-') || trimmed.match(/^\d+\./)) {
-      digest.nextActions.push(trimmed.replace(/^[-\d.]+\s*/, '').trim());
+      digest.openThreads.push(stripListMarker(trimmed));
+    } else if (trimmed.startsWith('-') || trimmed.startsWith('*') || trimmed.match(/^\d+[\.)]/)) {
+      digest.nextActions.push(stripListMarker(trimmed));
     }
   }
 
@@ -367,7 +232,7 @@ function generateContinuityDigest(
   }
 
   // Extract decisions from summary (lines with decision-indicating keywords)
-  const summaryLines = currentSummary.split('\n');
+  const summaryLines = `${currentSummary}\n${finalBridge}`.split('\n');
   for (const line of summaryLines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue; // Skip headings and empty lines
@@ -419,49 +284,6 @@ function formatContinuityDigest(digest: ContinuityDigest): string {
   return output;
 }
 
-function curateMemory(parsed: ParsedMemory, tokenLimit: number): { curated: ParsedMemory; movedEntries: MemoryEntry[] } {
-  const movedEntries: MemoryEntry[] = [];
-
-  // Decrement all active entry decay scores by 1 (minimum 0)
-  for (const entry of parsed.entries) {
-    entry.decay = Math.max(0, entry.decay - 1);
-  }
-
-  // Check if we're over the limit
-  let currentTokens = parsed.frontmatter.token_estimate || estimateTokens(formatMemoryMd(parsed));
-
-  if (currentTokens <= tokenLimit) {
-    return { curated: parsed, movedEntries: [] };
-  }
-
-  // Sort entries by decay (ascending) - lowest decay first
-  const sortedEntries = [...parsed.entries].sort((a, b) => a.decay - b.decay);
-
-  // Move entries with lowest decay to archive until under limit
-  while (currentTokens > tokenLimit && sortedEntries.length > 0) {
-    const entryToArchive = sortedEntries[0];
-
-    // Don't archive pinned entries (decay >= 6)
-    if (entryToArchive.decay >= 6) {
-      break; // All remaining entries are pinned
-    }
-
-    // Move to movedEntries list (use reference equality to avoid same-date collisions)
-    sortedEntries.shift();
-    const archiveIdx = parsed.entries.indexOf(entryToArchive);
-    if (archiveIdx !== -1) {
-      parsed.entries.splice(archiveIdx, 1);
-    }
-    entryToArchive.isArchived = true;
-    movedEntries.push(entryToArchive);
-    parsed.archivedEntries.unshift(entryToArchive); // Also update internal list for stats
-
-    // Recalculate tokens
-    currentTokens = estimateTokens(formatMemoryMd(parsed));
-  }
-
-  return { curated: parsed, movedEntries };
-}
 
 // ═══════════════════════════════════════════════════════════════
 // REGISTRY-BASED PROJECT LOOKUP
@@ -472,10 +294,10 @@ interface AppEntry {
   name: string;
   type: string;
   status: string;
-  repo?: { url: string; branch: string };
+  repo?: { url?: string; branch?: string; clone_path?: string };
   local_path: string;
-  soul_file: string;
-  journal_location: string;
+  soul_file?: string;
+  journal_location?: string;
   journal_prefix?: string;
   aws_account?: string;
   aws_region?: string;
@@ -521,6 +343,10 @@ function resolveSoulPath(app: AppEntry): string {
 
 function resolveProjectClaudeMdPath(app: AppEntry): string {
   return resolverResolveProjectClaudeMdPath(app);
+}
+
+function resolveProjectRoot(app: AppEntry): string {
+  return resolverResolveProjectRoot(app);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -578,95 +404,19 @@ function loadMemory(journalDir: string, memoryFilePath?: string): MemoryPayload 
   return { tier1_synopsis: tier1, tier2_sessions: tier2, tier3_current: "" };
 }
 
-function getLatestJournal(journalDir: string): string | null {
-  const expanded = expandPath(journalDir);
-  if (!fs.existsSync(expanded)) return null;
-
-  const files = fs.readdirSync(expanded)
-    .filter(f => f.endsWith('.md'))
-    .sort()
-    .reverse();
-
-  if (files.length === 0) return null;
-
-  // Find the most recent journal with substantive content (skip empty stubs)
-  for (const file of files) {
-    const filePath = path.join(expanded, file);
-    const content = fs.readFileSync(filePath, 'utf-8');
-    // A stub is ~200 chars (frontmatter + header). Anything >300 has real content.
-    const withoutFrontmatter = content.replace(/^---[\s\S]*?---\s*/, '');
-    if (withoutFrontmatter.trim().length > 100) {
-      return content;
-    }
-  }
-
-  // All journals are stubs — return the newest one
-  return fs.readFileSync(path.join(expanded, files[0]), 'utf-8');
+// Journal helpers (getLatestJournal, createJournalStub, checkParallelInstances)
+// are imported from src/lib/journal.ts. We keep a thin wrapper around
+// createJournalStub so the existing 3-arg call sites stay unchanged while the
+// lib supports an optional 4th carry-forward arg used in Phase 2.
+function createJournalStub(journalDir: string, agentName: string, app?: AppEntry): string {
+  return _createJournalStubLib(journalDir, agentName, app ?? null, "");
 }
 
-function createJournalStub(journalDir: string, agentName: string): string {
-  const expanded = expandPath(journalDir);
-
-  if (!fs.existsSync(expanded)) {
-    fs.mkdirSync(expanded, { recursive: true });
-  }
-
-  const date = new Date().toISOString().split('T')[0];
-  const created = new Date().toISOString();
-
-  // Atomic stub creation — O_CREAT|O_EXCL prevents sequence collisions
-  // when multiple agents load the same project simultaneously.
-  for (let seq = 1; seq <= 999; seq++) {
-    const sequence = String(seq).padStart(3, '0');
-    const filename = `${date}-${sequence}-${agentName}.md`;
-    const stubPath = path.join(expanded, filename);
-
-    const stub = `---
-date: "${date}"
-sequence: ${seq}
-instance: "${agentName}"
-status: active
-created: "${created}"
----
-
-# Session Journal: ${date}-${sequence}
-
-*Session started via zeos Inject MCP*
-
----
-
-`;
-
-    try {
-      fs.writeFileSync(stubPath, stub, { flag: 'wx' });  // Atomic create
-      return filename;
-    } catch (e: any) {
-      if (e.code === 'EEXIST') continue;  // Sequence taken, try next
-      throw e;
-    }
-  }
-
-  throw new Error(`Failed to create journal stub: all 999 sequences exhausted for ${date}`);
-}
-
-function checkParallelInstances(journalDir: string): string[] {
-  const expanded = expandPath(journalDir);
-  if (!fs.existsSync(expanded)) return [];
-
-  const date = new Date().toISOString().split('T')[0];
-  const todayJournals = fs.readdirSync(expanded)
-    .filter(f => f.startsWith(date) && f.endsWith('.md'));
-
-  const activeInstances: string[] = [];
-  for (const journal of todayJournals) {
-    const content = fs.readFileSync(path.join(expanded, journal), 'utf-8');
-    if (content.includes('status: active')) {
-      const match = journal.match(/\d{4}-\d{2}-\d{2}-\d{3}-(.+)\.md/);
-      if (match) activeInstances.push(match[1]);
-    }
-  }
-
-  return activeInstances;
+// getGitSnapshot is imported from src/lib/git-snapshot.ts. The lib takes a
+// pre-resolved repo path; we use the existing resolveProjectRoot from
+// path-resolver.ts (which honors clone_path, repo.url, and legacy local_path).
+function getGitSnapshot(app: AppEntry): string {
+  return _getGitSnapshotByPath(expandPath(resolveProjectRoot(app)));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -802,7 +552,7 @@ Coordinate to avoid conflicts.
     ? fs.readFileSync(expandedClaudeMd, "utf-8")
     : "";
 
-  // Load three-tier memory — MEMORY.md lives at ~/projects/zeos/memory/<app_id>/MEMORY.md
+  // Load three-tier memory. MEMORY.md lives at ~/projects/zeos/memory/<app_id>/MEMORY.md.
   const memoryPath = resolveMemoryPath(app);
   const memory = loadMemory(journalDir, memoryPath);
 
@@ -810,7 +560,7 @@ Coordinate to avoid conflicts.
   const latestJournal = getLatestJournal(journalDir);
 
   // NOW create journal stub (after reading previous state)
-  const journalStub = createJournalStub(journalDir, agentName);
+  const journalStub = createJournalStub(journalDir, agentName, app);
 
   // Register this journal for the session — compound key ensures /snap and /end
   // target THIS agent's journal even when multiple agents work on same project.
@@ -863,7 +613,7 @@ ${memory.tier2_sessions.join('\n\n')}
 
   // Get git status
   let gitStatus = "";
-  const repoPath = app.repo?.url ? `~/projects/${app.app_id}` : `${ZEOS_APPS_ROOT}/${app.local_path}`;
+  const repoPath = resolveProjectRoot(app);
   const expandedRepo = expandPath(repoPath);
   if (fs.existsSync(expandedRepo) && fs.existsSync(path.join(expandedRepo, '.git'))) {
     try {
@@ -988,7 +738,49 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           delta: {
             type: "string",
-            description: "Bridge content: state of the world, open threads, context that would be lost"
+            description: "Backward-compatible free-form bridge content"
+          },
+          objective: {
+            type: "string",
+            description: "Current mission in one sentence"
+          },
+          state: {
+            type: "string",
+            description: "What is true right now"
+          },
+          open_threads: {
+            type: "array",
+            items: { type: "string" },
+            description: "Pending work, blockers, or unresolved questions"
+          },
+          verified: {
+            type: "array",
+            items: { type: "string" },
+            description: "Facts, tests, or checks verified this session"
+          },
+          assumed: {
+            type: "array",
+            items: { type: "string" },
+            description: "Assumptions still requiring verification"
+          },
+          blockers: {
+            type: "array",
+            items: { type: "string" },
+            description: "Items blocking forward progress"
+          },
+          dead_ends: {
+            type: "array",
+            items: { type: "string" },
+            description: "Approaches tried and rejected"
+          },
+          next_tactical_move: {
+            type: "string",
+            description: "First action a cold next session should take"
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Retrieval tags for this checkpoint"
           },
           note: {
             type: "string",
@@ -999,7 +791,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Agent identifier for journal targeting (default: claude)"
           }
         },
-        required: ["project", "delta"]
+        required: ["project"]
       }
     },
     {
@@ -1016,20 +808,83 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Session summary for MEMORY.md"
           },
+          title: {
+            type: "string",
+            description: "Optional MEMORY.md entry title"
+          },
           delta: {
             type: "string",
-            description: "Final bridge: state, threads, context"
+            description: "Backward-compatible final bridge"
+          },
+          objective: {
+            type: "string",
+            description: "Current mission in one sentence"
+          },
+          state: {
+            type: "string",
+            description: "What is true at session close"
+          },
+          open_threads: {
+            type: "array",
+            items: { type: "string" },
+            description: "Pending work, blockers, or unresolved questions"
+          },
+          verified: {
+            type: "array",
+            items: { type: "string" },
+            description: "Facts, tests, or checks verified this session"
+          },
+          assumed: {
+            type: "array",
+            items: { type: "string" },
+            description: "Assumptions still requiring verification"
+          },
+          blockers: {
+            type: "array",
+            items: { type: "string" },
+            description: "Items blocking forward progress"
+          },
+          dead_ends: {
+            type: "array",
+            items: { type: "string" },
+            description: "Approaches tried and rejected"
+          },
+          next_tactical_move: {
+            type: "string",
+            description: "First action a cold next session should take"
           },
           nextActions: {
             type: "string",
             description: "Handoff for next session"
+          },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Retrieval tags for MEMORY.md"
+          },
+          importance: {
+            type: "number",
+            description: "Durable value from 1 to 5. 4 or 5 surfaces as SOUL promotion candidate."
+          },
+          why: {
+            type: "string",
+            description: "Why this memory matters"
+          },
+          how_to_apply: {
+            type: "string",
+            description: "How future sessions should use this memory"
+          },
+          refs: {
+            type: "array",
+            items: { type: "string" },
+            description: "Optional references such as paths, SHAs, PRs, or docs"
           },
           agent: {
             type: "string",
             description: "Agent identifier for journal targeting (default: claude)"
           }
         },
-        required: ["project", "summary", "delta", "nextActions"]
+        required: ["project", "summary", "nextActions"]
       }
     },
     {
@@ -1156,11 +1011,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "zeos_snap": {
         const project = args?.project as string;
-        const delta = args?.delta as string;
+        const delta = (args?.delta as string) || "";
         const note = (args?.note as string) || "";
+        const tags = normalizeTags(args?.tags);
+        const bridge = buildBridgeContent({
+          objective: args?.objective as string,
+          state: args?.state as string,
+          openThreads: normalizeStringList(args?.open_threads),
+          verified: normalizeStringList(args?.verified),
+          assumed: normalizeStringList(args?.assumed),
+          blockers: normalizeStringList(args?.blockers),
+          deadEnds: normalizeStringList(args?.dead_ends),
+          nextTacticalMove: args?.next_tactical_move as string,
+          delta
+        });
 
-        if (!project || !delta) {
-          return { content: [{ type: "text", text: "Error: project and delta required" }], isError: true };
+        if (!project || !bridge) {
+          return { content: [{ type: "text", text: "Error: project and bridge content required" }], isError: true };
         }
 
         const app = findProject(project);
@@ -1202,12 +1069,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const journalPath = path.join(expanded, targetJournal);
+        const gitSnapshot = getGitSnapshot(app);
+        const redactedBridge = redactSensitiveText(bridge);
+        const redactedNote = redactSensitiveText(note);
+        const redactedGitSnapshot = redactSensitiveText(gitSnapshot);
+        const redactions = mergeRedactions(redactedBridge, redactedNote, redactedGitSnapshot);
 
         const snapEntry = `
-## Checkpoint: ${timestamp.split('T')[1].substring(0,8)}
+## Checkpoint: ${timestamp}
 
-${note ? `**Note:** ${note}\n\n` : ''}### Bridge
-${delta}
+${redactedNote.text ? `**Note:** ${redactedNote.text}\n\n` : ''}${tags.length > 0 ? `**Tags:** ${tags.join(", ")}\n\n` : ''}### Bridge
+${redactedBridge.text}
+
+${redactedGitSnapshot.text ? `${redactedGitSnapshot.text}\n` : ''}
+${formatRedactionNotice(redactions)}
 
 ---
 `;
@@ -1215,17 +1090,37 @@ ${delta}
         fs.appendFileSync(journalPath, snapEntry);
         verifyJournalWritten(journalPath);
 
-        return { content: [{ type: "text", text: `✓ Checkpoint saved to ${journalPath}` }] };
+        const redactionSummary = redactions.count > 0
+          ? ` (${redactions.count} sensitive value(s) redacted)`
+          : "";
+        return { content: [{ type: "text", text: `✓ Checkpoint saved to ${journalPath}${redactionSummary}` }] };
       }
 
       case "zeos_end_session": {
         const project = args?.project as string;
         const summary = args?.summary as string;
-        const delta = args?.delta as string;
+        const title = (args?.title as string) || "";
+        const delta = (args?.delta as string) || "";
         const nextActions = args?.nextActions as string;
+        const tags = normalizeTags(args?.tags);
+        const importance = clampImportance(args?.importance);
+        const why = (args?.why as string) || "";
+        const howToApply = (args?.how_to_apply as string) || "";
+        const refs = normalizeStringList(args?.refs);
+        const finalBridge = buildBridgeContent({
+          objective: args?.objective as string,
+          state: args?.state as string,
+          openThreads: normalizeStringList(args?.open_threads),
+          verified: normalizeStringList(args?.verified),
+          assumed: normalizeStringList(args?.assumed),
+          blockers: normalizeStringList(args?.blockers),
+          deadEnds: normalizeStringList(args?.dead_ends),
+          nextTacticalMove: args?.next_tactical_move as string,
+          delta
+        });
 
-        if (!project || !summary || !delta || !nextActions) {
-          return { content: [{ type: "text", text: "Error: project, summary, delta, nextActions required" }], isError: true };
+        if (!project || !summary || !finalBridge || !nextActions) {
+          return { content: [{ type: "text", text: "Error: project, summary, final bridge content, and nextActions required" }], isError: true };
         }
 
         const app = findProject(project);
@@ -1240,6 +1135,25 @@ ${delta}
         const expanded = expandPath(journalDir);
         const timestamp = new Date().toISOString();
         const date = timestamp.split('T')[0];
+        const redactedSummary = redactSensitiveText(summary);
+        const redactedTitle = redactSensitiveText(title);
+        const redactedFinalBridge = redactSensitiveText(finalBridge);
+        const redactedNextActions = redactSensitiveText(nextActions);
+        const redactedWhy = redactSensitiveText(why);
+        const redactedHowToApply = redactSensitiveText(howToApply);
+        const redactedRefsText = redactSensitiveText(refs.join('\n'));
+        const redactedRefs = normalizeStringList(redactedRefsText.text);
+        const redactedGitSnapshot = redactSensitiveText(getGitSnapshot(app));
+        const redactions = mergeRedactions(
+          redactedSummary,
+          redactedTitle,
+          redactedFinalBridge,
+          redactedNextActions,
+          redactedWhy,
+          redactedHowToApply,
+          redactedRefsText,
+          redactedGitSnapshot
+        );
 
         // Find THIS agent's journal via session registry (compound key), fallback to filesystem scan
         const sessionKey = `${app.app_id}::${agent}`;
@@ -1270,16 +1184,20 @@ ${delta}
           content = content.replace('status: active', 'status: complete');
 
           const endEntry = `
-## Session End: ${timestamp.split('T')[1].substring(0,8)}
+## Session End: ${timestamp}
 
 ### Summary
-${summary}
+${redactedSummary.text}
 
 ### Final Bridge
-${delta}
+${redactedFinalBridge.text}
 
 ### Next Actions
-${nextActions}
+${redactedNextActions.text}
+
+${tags.length > 0 ? `### Tags\n${formatListSection(tags)}\n` : ''}
+${redactedGitSnapshot.text ? `${redactedGitSnapshot.text}\n` : ''}
+${formatRedactionNotice(redactions)}
 
 ---
 *Session complete*
@@ -1306,13 +1224,25 @@ ${nextActions}
         const lockAcquired = acquireMemoryLock(memoryPath);
         if (!lockAcquired) {
           // Journal is already saved — MEMORY.md update is best-effort
-          curationMessage = "\n⚠️ Could not acquire MEMORY.md lock (parallel write in progress). Journal saved, MEMORY.md update skipped.";
+          curationMessage = "\nWarning: Could not acquire MEMORY.md lock (parallel write in progress). Journal saved, MEMORY.md update skipped.";
         }
 
         try {
           if (lockAcquired) {
             // Extract first line of summary as title (allow longer titles for better recall)
-            const summaryTitle = summary.split('\n')[0].substring(0, 150);
+            const summaryTitle = redactedTitle.text.trim()
+              ? redactedTitle.text.trim().substring(0, 150)
+              : titleFromSummary(redactedSummary.text);
+            const memoryEntryContent = formatMemoryEntryContent(
+              redactedSummary.text,
+              redactedFinalBridge.text,
+              redactedNextActions.text,
+              journalPath,
+              redactions,
+              redactedWhy.text,
+              redactedHowToApply.text,
+              redactedRefs
+            );
 
             if (fs.existsSync(memoryPath)) {
               // Read MEMORY.md under lock (fresh read guarantees we see other agents' entries)
@@ -1325,26 +1255,35 @@ ${nextActions}
               }
 
               const parsed = parseMemoryMd(existing, archiveContent);
+              ageMemoryEntries(parsed);
 
-              // Add new entry with decay:3 (survives 3 sessions before becoming archival candidate)
+              // Add new entry with enough recency TTL to survive normal 10-20 session continuity.
               const newEntry: MemoryEntry = {
                 date,
                 title: summaryTitle,
-                decay: 3,
-                content: summary,
+                decay: MEMORY_ENTRY_DECAY_DEFAULT,
+                importance,
+                tags,
+                refs: redactedRefs,
+                content: memoryEntryContent,
                 isArchived: false
               };
               parsed.entries.unshift(newEntry); // Add to beginning
 
               // Generate and update Continuity Digest
-              const digest = generateContinuityDigest(journalDir, summary, nextActions);
+              const digest = generateContinuityDigest(
+                journalDir,
+                redactedSummary.text,
+                redactedNextActions.text,
+                redactedFinalBridge.text
+              );
               parsed.continuityDigest = formatContinuityDigest(digest);
 
               // Auto-curate if over token limit
               const { curated, movedEntries } = curateMemory(parsed, tokenLimit);
 
               if (movedEntries.length > 0) {
-                curationMessage = `\n📦 Auto-curated: ${movedEntries.length} entries moved to MEMORY_ARCHIVE.md (token limit: ${tokenLimit})`;
+                curationMessage = `\nAuto-curated: ${movedEntries.length} entries moved to MEMORY_ARCHIVE.md (token limit: ${tokenLimit})`;
 
                 // Write/update archive file
                 fs.writeFileSync(archivePath, formatMemoryMd(curated, 'archive'));
@@ -1354,7 +1293,12 @@ ${nextActions}
               fs.writeFileSync(memoryPath, formatMemoryMd(curated));
             } else {
               // Create new MEMORY.md with proper format
-              const digest = generateContinuityDigest(journalDir, summary, nextActions);
+              const digest = generateContinuityDigest(
+                journalDir,
+                redactedSummary.text,
+                redactedNextActions.text,
+                redactedFinalBridge.text
+              );
               const newMemory: ParsedMemory = {
                 frontmatter: {
                   document: "MEMORY",
@@ -1368,8 +1312,11 @@ ${nextActions}
                 entries: [{
                   date,
                   title: summaryTitle,
-                  decay: 3,
-                  content: summary,
+                  decay: MEMORY_ENTRY_DECAY_DEFAULT,
+                  importance,
+                  tags,
+                  refs: redactedRefs,
+                  content: memoryEntryContent,
                   isArchived: false
                 }],
                 archivedEntries: [],
@@ -1384,16 +1331,19 @@ ${nextActions}
           }
         }
 
-        // Check for promotion candidates (decay >= 4)
+        // Check for promotion candidates: high-importance entries.
         let promotionHints = "";
         const existingContent = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, 'utf-8') : "";
         const existingParsed = parseMemoryMd(existingContent);
-        const candidates = existingParsed.entries.filter(e => e.decay >= 4);
+        const candidates = existingParsed.entries.filter(e =>
+          e.importance >= MEMORY_PROMOTION_IMPORTANCE_THRESHOLD
+        );
 
         if (candidates.length > 0) {
-          promotionHints = "\n\n📌 SOUL Promotion Candidates:\n";
+          promotionHints = "\n\nSOUL Promotion Candidates:\n";
           for (const c of candidates) {
-            promotionHints += `   - "${c.title}" (decay:${c.decay})\n`;
+            const tagSuffix = c.tags.length > 0 ? ` tags:${c.tags.join(",")}` : "";
+            promotionHints += `   - "${c.title}" (importance:${c.importance}, decay:${c.decay}${tagSuffix})\n`;
           }
           promotionHints += "   Consider adding to SOUL.md if these are core project patterns.\n";
         }
@@ -1409,7 +1359,7 @@ Next session:
   /zeos
   /project ${app.app_id}
 
-Resume: ${nextActions.split('\n')[0]}
+Resume: ${redactedNextActions.text.split('\n')[0]}
 
 ═══════════════════════════════════════════════════════════════
 `;
@@ -1527,9 +1477,9 @@ Resume: ${nextActions.split('\n')[0]}
 | Usage | ${healthPercent}% |
 | Health | ${healthStatus} |
 
-## Active Entries by Decay
+## Active Entries by Retention
 
-${parsed.entries.map(e => `- [decay:${e.decay}] ${e.date}: ${e.title}`).join('\n') || '*No entries*'}
+${parsed.entries.map(e => `- [decay:${e.decay}, importance:${e.importance}] ${e.date}: ${e.title}`).join('\n') || '*No entries*'}
 
 ## Archive Preview
 
@@ -1542,11 +1492,11 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
           case "list": {
             result = `# MEMORY.md Entries: ${project}\n\n## Active\n\n`;
             for (const e of parsed.entries) {
-              result += `- **${e.date}**: ${e.title} [decay:${e.decay}]\n`;
+              result += `- **${e.date}**: ${e.title} [decay:${e.decay}, importance:${e.importance}]\n`;
             }
             result += `\n## Archived\n\n`;
             for (const e of parsed.archivedEntries) {
-              result += `- **${e.date}**: ${e.title} [decay:${e.decay}]\n`;
+              result += `- **${e.date}**: ${e.title} [decay:${e.decay}, importance:${e.importance}]\n`;
             }
             break;
           }
@@ -1560,9 +1510,11 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             if (!entry) {
               return { content: [{ type: "text", text: `Error: No active entry found for date ${targetDate}` }], isError: true };
             }
-            entry.decay = 6;
+            entry.decay = Math.max(entry.decay, MEMORY_ENTRY_DECAY_DEFAULT);
+            entry.importance = 5;
+            entry.tags = [...new Set([...(entry.tags || []), "pinned"])];
             fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
-            result = `✓ Pinned entry ${targetDate} (decay set to 6, will never auto-archive)`;
+            result = `✓ Pinned entry ${targetDate} (importance set to 5)`;
             break;
           }
 
@@ -1575,9 +1527,10 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             if (!entry) {
               return { content: [{ type: "text", text: `Error: No active entry found for date ${targetDate}` }], isError: true };
             }
-            entry.decay = 1;
+            entry.importance = MEMORY_ENTRY_IMPORTANCE_DEFAULT;
+            entry.tags = (entry.tags || []).filter(t => t !== "pinned");
             fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
-            result = `✓ Unpinned entry ${targetDate} (decay reset to 1)`;
+            result = `✓ Unpinned entry ${targetDate} (importance reset to ${MEMORY_ENTRY_IMPORTANCE_DEFAULT})`;
             break;
           }
 
@@ -1620,7 +1573,8 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             }
             const entry = parsed.archivedEntries.splice(archiveIndex, 1)[0];
             entry.isArchived = false;
-            entry.decay = 2; // Give it a boost since operator promoted it
+            entry.decay = Math.max(entry.decay, MEMORY_ENTRY_DECAY_DEFAULT);
+            entry.importance = Math.max(entry.importance, MEMORY_ENTRY_IMPORTANCE_DEFAULT);
             parsed.entries.push(entry);
 
             // Write both files
@@ -1631,7 +1585,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
               // Remove empty archive file
               fs.unlinkSync(archivePath);
             }
-            result = `✓ Promoted entry ${targetDate} from MEMORY_ARCHIVE.md to MEMORY.md (decay:2)`;
+            result = `✓ Promoted entry ${targetDate} from MEMORY_ARCHIVE.md to MEMORY.md`;
             break;
           }
 
@@ -1648,11 +1602,14 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
               return { content: [{ type: "text", text: `Error: Both dates must be active entries. Found: ${entry1 ? date1 : 'missing ' + date1}, ${entry2 ? date2 : 'missing ' + date2}` }], isError: true };
             }
 
-            // Merge: combine titles, combine content, use higher decay, use earlier date
+            // Merge: combine titles/content, preserve strongest retention metadata, use earlier date.
             const mergedEntry: MemoryEntry = {
               date: entry1.date < entry2.date ? entry1.date : entry2.date,
               title: `${entry1.title} + ${entry2.title}`,
               decay: Math.max(entry1.decay, entry2.decay),
+              importance: Math.max(entry1.importance, entry2.importance),
+              tags: [...new Set([...(entry1.tags || []), ...(entry2.tags || [])])],
+              refs: [...new Set([...(entry1.refs || []), ...(entry2.refs || [])])],
               content: `${entry1.content}\n\n---\n\n${entry2.content}`,
               isArchived: false
             };
