@@ -15,7 +15,10 @@
 #   - The zeos section from ~/.claude/CLAUDE.md (marker-delimited)
 #   - ~/projects/zeos/ directory (default; --keep-repo skips)
 #
-# Never touches:
+# Never touches (unless you opt in with --purge-state):
+#   - ~/.zeos/ operator state (registry, profiles, souls, memory, journals,
+#     roadmaps). As of v1.2.0 this lives outside the repo, so removing the repo
+#     leaves it intact. Pass --purge-state to delete it too.
 #   - Your project repos under ~/projects/<other-project>/
 #   - Other MCP servers in ~/.claude.json / ~/.mcp.json
 #   - Your ~/.claude/CLAUDE.md outside the zeos-managed section
@@ -32,14 +35,14 @@ NC='\033[0m'
 
 # Flags
 KEEP_REPO=false
-KEEP_STATE=false
+PURGE_STATE=false
 YES=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --keep-repo)  KEEP_REPO=true;  shift ;;
-        --keep-state) KEEP_STATE=true; shift ;;
-        --yes|-y)     YES=true;        shift ;;
+        --keep-repo)   KEEP_REPO=true;   shift ;;
+        --purge-state) PURGE_STATE=true; shift ;;
+        --yes|-y)      YES=true;         shift ;;
         --help|-h)
             cat <<HELP
 zeos uninstaller
@@ -47,11 +50,13 @@ zeos uninstaller
 Usage: bash uninstall.sh [options]
 
 Options:
-  --keep-repo    Don't remove ~/projects/zeos/ (skills + MCP entries still cleaned)
-  --keep-state   Move souls/, journals/, memory/ to a backup dir before removing repo
-  --yes / -y     Skip confirmation prompts
+  --keep-repo     Don't remove ~/projects/zeos/ (skills + MCP entries still cleaned)
+  --purge-state   ALSO delete ~/.zeos/ operator state (registry, profiles, souls,
+                  memory, journals, roadmaps). Off by default; this is destructive.
+  --yes / -y      Skip confirmation prompts
 
 Always preserved (never touched):
+  - ~/.zeos/ operator state, UNLESS you pass --purge-state
   - Your project repos under ~/projects/<other-project>/
   - The team's CLAUDE.md in any project repo
   - Other MCP servers in ~/.claude.json (only zeos + overseer entries removed)
@@ -113,15 +118,17 @@ fi
 
 REMOVE_REPO=false
 if [ "$KEEP_REPO" = false ] && [ -d "$ZEOS_DIR" ]; then
-    if [ "$KEEP_STATE" = true ]; then
-        echo "  - $ZEOS_DIR/ (souls/journals/memory backed up first)"
-    else
-        echo "  - $ZEOS_DIR/ (including souls/journals/memory)"
-    fi
+    echo "  - $ZEOS_DIR/ (repo only; operator state lives in ~/.zeos)"
     REMOVE_REPO=true
 fi
 
-if [ ${#SKILLS_FOUND[@]} -eq 0 ] && [ ${#MCP_TO_CLEAN[@]} -eq 0 ] && [ "$CLAUDE_MD_HAS_MARKER" = false ] && [ "$REMOVE_REPO" = false ]; then
+PURGE_STATE_DIR=false
+if [ "$PURGE_STATE" = true ] && [ -d "$HOME/.zeos" ]; then
+    echo "  - ~/.zeos/ (operator state: registry, profiles, souls, memory, journals, roadmaps)"
+    PURGE_STATE_DIR=true
+fi
+
+if [ ${#SKILLS_FOUND[@]} -eq 0 ] && [ ${#MCP_TO_CLEAN[@]} -eq 0 ] && [ "$CLAUDE_MD_HAS_MARKER" = false ] && [ "$REMOVE_REPO" = false ] && [ "$PURGE_STATE_DIR" = false ]; then
     echo "  (nothing to do — zeos isn't installed)"
     echo ""
     exit 0
@@ -129,6 +136,9 @@ fi
 
 echo ""
 echo -e "${YELLOW}Will NOT touch:${NC}"
+if [ "$PURGE_STATE_DIR" = false ]; then
+    echo "  - ~/.zeos/ operator state (pass --purge-state to remove it too)"
+fi
 echo "  - Your project repos under ~/projects/<other-project>/"
 echo "  - Other MCP servers in ~/.claude.json / ~/.mcp.json"
 echo "  - Your ~/.claude/CLAUDE.md outside the zeos-managed section"
@@ -206,18 +216,14 @@ if [ "$REMOVE_REPO" = true ]; then
             ;;
     esac
 
-    if [ "$KEEP_STATE" = true ]; then
-        BACKUP_DIR="$HOME/projects/zeos-state-backup-$(date +%s)"
-        mkdir -p "$BACKUP_DIR"
-        for sub in souls journals memory; do
-            if [ -d "$ZEOS_DIR/$sub" ]; then
-                mv "$ZEOS_DIR/$sub" "$BACKUP_DIR/"
-            fi
-        done
-        echo -e "${GREEN}  ✓${NC} Backed up state to $BACKUP_DIR"
-    fi
     rm -rf "$ZEOS_DIR"
-    echo -e "${GREEN}  ✓${NC} Removed $ZEOS_DIR"
+    echo -e "${GREEN}  ✓${NC} Removed $ZEOS_DIR (operator state in ~/.zeos preserved)"
+fi
+
+# 5. Operator state (opt-in, destructive)
+if [ "$PURGE_STATE_DIR" = true ]; then
+    rm -rf "$HOME/.zeos"
+    echo -e "${GREEN}  ✓${NC} Purged ~/.zeos operator state"
 fi
 
 echo ""

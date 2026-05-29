@@ -466,9 +466,9 @@ preferences:
 
 ## Related Documents
 
-- REPO_BOUNDARY_ARCHITECTURE.md (`~/projects/zeos-apps/zeos-dev/docs/design/`) — Architecture design
-- REPO_BOUNDARY_SCHEMA.md (`~/projects/zeos-apps/zeos-dev/docs/design/`) — YAML schema
-- REPO_BOUNDARY_COMMANDS.md (`~/projects/zeos-apps/zeos-dev/docs/design/`) — Command interface
+- REPO_BOUNDARY_ARCHITECTURE.md (design reference): Architecture design
+- REPO_BOUNDARY_SCHEMA.md (design reference): YAML schema
+- REPO_BOUNDARY_COMMANDS.md (design reference): Command interface
 - [BOOT_PROTOCOL.md](../../kernel/BOOT_PROTOCOL.md) — G12 gate integration
 - [SHELL_PROTOCOL.md](ZEOS_MODULE_002_SHELL_PROTOCOL.md) — Command integration
 

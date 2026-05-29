@@ -64,7 +64,7 @@ SESSION                              — ephemeral work
 | Tier | Source | Purpose |
 |------|--------|---------|
 | **Long-term** | Kernel SOUL + project SOUL + project CLAUDE.md | Identity. Rarely changes. |
-| **Mid-term** | `~/projects/zeos/memory/<id>/MEMORY.md` | Curated, decay-tagged. Default 10K tokens. |
+| **Mid-term** | `~/.zeos/memory/<id>/MEMORY.md` | Curated, decay-tagged. Default 10K tokens. |
 | **Short-term** | Latest 1–2 session journals | Recent decisions, in-flight work. |
 
 ### Boot modes
@@ -76,11 +76,11 @@ SESSION                              — ephemeral work
 
 | Artifact | Path |
 |---|---|
-| Project SOUL | `~/projects/zeos/souls/<app_id>/SOUL.md` (zeos, gitignored) |
-| Session journals | `~/projects/zeos/journals/<app_id>/YYYY-MM-DD-NNN-<agent>.md` (zeos, gitignored) |
-| MEMORY.md | `~/projects/zeos/memory/<app_id>/MEMORY.md` (zeos, gitignored) |
+| Project SOUL | `~/.zeos/souls/<app_id>/SOUL.md` (zeos, gitignored) |
+| Session journals | `~/.zeos/journals/<app_id>/YYYY-MM-DD-NNN-<agent>.md` (zeos, gitignored) |
+| MEMORY.md | `~/.zeos/memory/<app_id>/MEMORY.md` (zeos, gitignored) |
 | Project CLAUDE.md | `<local_path>/CLAUDE.md` (project repo, scaffolded by `/newproject`) |
-| Project registry | `apps/REGISTRY.json` (zeos, committed) |
+| Project registry | `~/.zeos/apps/REGISTRY.json` (zeos, committed) |
 
 ### Module structure
 
@@ -100,7 +100,7 @@ zeos supports advisor/executor paired-lane patterns via the Overseer MCP server 
 
 ### Session journals (when working on zeos itself)
 
-Append-only logs at `~/projects/zeos/journals/zeos-dev/YYYY-MM-DD-NNN-<agent>.md`. Written by `/snap` and `/end` (when `/project zeos-dev` is active). Never rewrite past entries.
+Append-only logs at `~/.zeos/journals/zeos-dev/YYYY-MM-DD-NNN-<agent>.md`. Written by `/snap` and `/end` (when `/project zeos-dev` is active). Never rewrite past entries.
 
 ### Git workflow
 

@@ -262,13 +262,13 @@ Mode: GHOST (read-only) — No writes to journals, blueprints, or roadmaps
 - To convert ghost → normal: `/end` then `/project <id>` without 
 
 **Execution:**
-1. Look up `app_id` in `apps/REGISTRY.json`
+1. Look up `app_id` in `~/.zeos/apps/REGISTRY.json`
 2. Load Kernel (SOUL, BOOT_PROTOCOL, ARCH_SPEC) — same as `/zeos`
 3. Load Profile (MISSION.md, PREFERENCES.md) — same as `/zeos`
-4. Load App SOUL file from `~/projects/zeos-apps/{app_id}/{APP_ID}_SOUL.md`
+4. Load App SOUL file from `~/.zeos/souls/{app_id}/SOUL.md`
 5. **MANDATORY BOOT SEQUENCE ENFORCEMENT** (see below)
-6. Load latest session journal from `{app-repo}/session-journals/`
-7. Set journal routing to `{app-repo}/session-journals/` (from SOUL's `session_journals` field)
+6. Load latest session journal from `~/.zeos/journals/<app_id>/`
+7. Journal routing is resolved by `app_id` to `~/.zeos/journals/<app_id>/`
 8. Output App Resume Card with context from latest journal
 
 ### Boot Verification Requirement (Cross-Agent Enforcement)
@@ -279,7 +279,7 @@ After loading App SOUL (step 4), agent MUST:
 
 1. **PARSE** the App SOUL for a "MANDATORY BOOT SEQUENCE" section
 2. **IF FOUND**: Load EACH file listed in order, confirming each read
-3. **GLOB** the session-journals directory: `{app-repo}/session-journals/*.md`
+3. **GLOB** the journals directory: `~/.zeos/journals/<app_id>/*.md`
 4. **LOAD** the most recent journal file (by filename sort, descending)
 5. **EXTRACT** resume context: `next_action_primer`, last checkpoint, current phase
 6. **OUTPUT** boot card ONLY after ALL files confirmed loaded
@@ -294,11 +294,11 @@ IF App SOUL has MANDATORY BOOT SEQUENCE:
             OUTPUT "BOOT_INCOMPLETE: Missing [filename] from mandatory sequence"
             HALT — do not output boot card
 
-IF session-journals directory empty:
+IF journals directory empty:
     WARN "No prior sessions — starting fresh"
     PROCEED — this is non-fatal
 
-IF session-journals exist but latest cannot be read:
+IF journals exist but latest cannot be read:
     WARN "Could not load latest journal — resume context unavailable"
     PROCEED — this is non-fatal
 ```
@@ -317,8 +317,8 @@ Different AI agents (Claude, Codex, Gemini, Aider) interpret "load" differently.
 **Journal Routing:**
 
 The `/project` command sets the active journal destination based on the app's SOUL file:
-- All `/snap` writes go to `{app-repo}/session-journals/`
-- All `/end` writes go to `{app-repo}/session-journals/`
+- All `/snap` writes go to `~/.zeos/journals/<app_id>/`
+- All `/end` writes go to `~/.zeos/journals/<app_id>/`
 - Profiles do not have journals; all journaling routes to project repos
 
 **Resume Card Format:**
@@ -331,7 +331,7 @@ Profile: {profile}
 Application: {App Name}
 
 [App-specific status from SOUL file]
-Journal Routing: {app-repo}/session-journals/
+Journal Routing: ~/.zeos/journals/<app_id>/
 Last Session: [Summary from latest journal]
 ═══════════════════════════════════════════════════════════════
 Shell commands active: /snap, /end, +log, /status, /help
@@ -350,7 +350,7 @@ Ready for {App Name} directives.
 | Command | Boots Into | Journal Location |
 |---------|------------|------------------|
 | `/zeos` | Project mode (no active project) | None — use `/project <id>` to enable journaling |
-| `/project <id>` | Application context | `{app-repo}/session-journals/` |
+| `/project <id>` | Application context | `~/.zeos/journals/<app_id>/` |
 
 **Note:** `/project` is the preferred way to start app sessions. The verbose phrase "Begin journaled session: {App Name}" in user preferences is deprecated but still supported for backward compatibility.
 
@@ -381,12 +381,11 @@ Ready for {App Name} directives.
 ```
 
 **Execution:**
-1. Validate project_id is unique (not in REGISTRY.json)
+1. Validate project_id is unique (not in `~/.zeos/apps/REGISTRY.json`)
 2. Confirm with Operator
-3. Create `~/projects/zeos-apps/{project_id}/SOUL.md`
-4. Create standard structure in project repo (docs/, session-journals/, .zeos/)
-5. Add entry to `apps/REGISTRY.json`
-6. Output scaffolding confirmation
+3. Scaffold state-side artifacts under `~/.zeos/` (SOUL, MEMORY, journals/, roadmaps/) and `CLAUDE.md` in the project repo
+4. Add entry to `~/.zeos/apps/REGISTRY.json`
+5. Output scaffolding confirmation
 
 **Full Specification:** See `modules/protocols/NEW_PROJECT_PROTOCOL.md`
 
@@ -420,15 +419,15 @@ Ready for {App Name} directives.
 ```
 
 **Execution:**
-1. **VALIDATE** — Verify old_id exists in REGISTRY.json
-2. **VALIDATE** — Verify new_id is available (not in REGISTRY, valid format)
-3. **CONFIRM** — Show rename plan, await confirmation (unless --yes)
-4. **RENAME REPO** — Call GitHub API to rename repository
-5. **UPDATE REGISTRY** — Modify apps/REGISTRY.json:
+1. **VALIDATE**: Verify old_id exists in `~/.zeos/apps/REGISTRY.json`
+2. **VALIDATE**: Verify new_id is available (not in registry, valid format)
+3. **CONFIRM**: Show rename plan, await confirmation (unless --yes)
+4. **RENAME REPO**: Call GitHub API to rename repository
+5. **UPDATE REGISTRY**: Modify `~/.zeos/apps/REGISTRY.json`:
    - Change `app_id` to new_id
    - Update `repo.url` to new GitHub URL
    - Add `"aliases": ["old_id"]` (unless --no-alias)
-6. **RENAME FOLDER** — Move `~/projects/zeos-apps/{old_id}/` → `~/projects/zeos-apps/{new_id}/`
+6. **RENAME STATE DIRS** - Move the state-side dirs `~/.zeos/{souls,memory,journals,roadmaps}/{old_id}/` to `.../{new_id}/`
 7. **UPDATE SOUL** — Change `app_id` field in SOUL file
 8. **OUTPUT** — Confirmation with new `/project` command
 
@@ -963,7 +962,7 @@ ZEOS STATUS
 ═══════════════════════════════════════════════════════════════
 Instance:      claude-opus-a3f2
 Parallel:      2 other instances active
-Journal:       session-journals/2026-01-08-008-claude-opus.md
+Journal:       ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
 
 Kernel:        ✅ Loaded (SOUL, BOOT_PROTOCOL)
 Profile:       ✅ operator
@@ -1134,8 +1133,8 @@ python3 tools/fleet.py [arguments]
 
 **Drift Detection:**
 The fleet manager compares each app against the current zeos manifest:
-- APP_MANIFEST.json version vs scaffold.py version
-- Required files (docs/, .zeos/, session-journals/)
+- Registry entry vs scaffolded state
+- Required state-side artifacts under `~/.zeos/{souls,memory,journals,roadmaps}/<app_id>/`, plus the project's `CLAUDE.md`
 - Structure compliance with scaffolding system standards
 
 **Implementation:** `tools/fleet.py` v1.0.0
@@ -1193,7 +1192,7 @@ Total: 2 active, 1 stale
 | Parallel instances found | Instance table with status |
 
 **Implementation:**
-1. Scan `session-journals/{today}-*.md`
+1. Scan `~/.zeos/journals/<app_id>/{today}-*.md`
 2. Parse frontmatter for `status`, `instance`, `started`
 3. Calculate last activity from file mtime or heartbeat
 4. Display sorted by recency
@@ -1294,7 +1293,7 @@ Branches are created automatically when:
 2. Rebase attempt fails with conflicts
 3. Agent creates conflict branch instead of blocking
 
-See `~/projects/zeos-apps/zeos-dev/docs/PARALLEL_INSTANCE_PROTOCOL.md` for full specification.
+See the parallel-instance protocol documentation for full specification.
 
 **Errors:**
 | Error | Cause | Recovery |
@@ -1303,7 +1302,7 @@ See `~/projects/zeos-apps/zeos-dev/docs/PARALLEL_INSTANCE_PROTOCOL.md` for full 
 | MERGE_CONFLICT | Branch conflicts with main | Resolve manually or skip |
 | NOT_ON_MAIN | Not on main branch | Checkout main first |
 
-**Reference:** `~/projects/zeos-apps/zeos-dev/docs/PARALLEL_INSTANCE_PROTOCOL.md` (Git Coordination)
+**Reference:** the parallel-instance protocol documentation (Git Coordination)
 
 ---
 
@@ -1338,12 +1337,13 @@ python3 tools/scaffold.py --retrofit-all [--yes]
 ```
 
 **Retrofit Logic:**
-1. Look up app in REGISTRY.json to find repo
-2. Check which required files are missing:
-   - `.zeos/APP_MANIFEST.json`
-   - `docs/MASTER_ROADMAP.md`
-   - `docs/SYSTEM_ARCHITECTURE.md`
-   - `session-journals/README.md`
+1. Look up app in `~/.zeos/apps/REGISTRY.json`
+2. Check which required artifacts are missing (state-side, under `~/.zeos/<dir>/<app_id>/`):
+   - `~/.zeos/souls/<app_id>/SOUL.md`
+   - `~/.zeos/memory/<app_id>/MEMORY.md`
+   - `~/.zeos/journals/<app_id>/README.md`
+   - `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md`
+   - `<local_path>/CLAUDE.md` (project repo)
 3. Create ONLY missing files (never overwrites)
 4. Report what was created vs preserved
 
@@ -1396,7 +1396,7 @@ python3 tools/scaffold.py --retrofit-all [--yes]
 
 **Execution:**
 1. Load `kernel/ZEOS_MANIFEST.json` (the System Ledger)
-2. Load `apps/REGISTRY.json` (fleet list)
+2. Load `~/.zeos/apps/REGISTRY.json` (fleet list)
 3. For each app (or specified --app):
    a. Fetch `.zeos_version` from app repo
    b. Compare against manifest

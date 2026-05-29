@@ -99,10 +99,36 @@ mkdir -p "$HOME/projects"
 if [ -d "$ZEOS_DIR" ]; then
     echo "zeos directory exists. Updating..."
     cd "$ZEOS_DIR"
+    # v1.2.0+: if the migration tool is already present (v1.2.0 or later),
+    # snapshot and relocate in-repo operator state to ~/.zeos BEFORE pulling,
+    # so the pull (which removes the tracked registry) cannot lose it. On a
+    # first jump from v1.1.0 the tool does not exist yet; see
+    # docs/UPGRADING_TO_V1_2_0.md for the one-time manual pre-pull backup.
+    if [ -f "$ZEOS_DIR/tools/migrate-state.py" ]; then
+        python3 "$ZEOS_DIR/tools/migrate-state.py" --apply --backup \
+            || echo "Warning: pre-pull state backup reported issues"
+    fi
     git pull origin main || echo "Warning: Could not pull updates"
 else
     echo "Cloning zeos..."
     git clone "$ZEOS_REPO" "$ZEOS_DIR"
+    cd "$ZEOS_DIR"
+fi
+
+# v1.2.0: relocate operator state to ~/.zeos (idempotent). On update, ingest the
+# canonical registry from the most recent pre-pull backup so the now-empty
+# post-pull repo registry never overwrites it. On a fresh clone this just
+# bootstraps an empty ~/.zeos from apps/REGISTRY.example.json.
+if [ -f "$ZEOS_DIR/tools/migrate-state.py" ]; then
+    LATEST_REG_BACKUP=$(ls -dt "$HOME"/.zeos/backups/*/repo-local-state/apps/REGISTRY.json 2>/dev/null | head -1 || true)
+    if [ -n "$LATEST_REG_BACKUP" ]; then
+        python3 "$ZEOS_DIR/tools/migrate-state.py" --apply --cleanup-repo-state \
+            --registry-source "$LATEST_REG_BACKUP" \
+            || echo "Warning: state migration reported issues"
+    else
+        python3 "$ZEOS_DIR/tools/migrate-state.py" --apply \
+            || echo "Warning: state migration reported issues"
+    fi
 fi
 
 echo -e "${GREEN}✓ zeos repository ready${NC}"
@@ -126,12 +152,15 @@ if [ "$UPDATE_MODE" = false ]; then
     # Normalize profile name
     PROFILE_NAME=$(echo "$PROFILE_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
 
-    PROFILE_DIR="$ZEOS_DIR/profiles/$PROFILE_NAME"
+    # v1.2.0: operator profiles live under the state root (~/.zeos), not in the
+    # repo. Only profiles/template/ ships in the repo as a product default.
+    PROFILE_DIR="$HOME/.zeos/profiles/$PROFILE_NAME"
 
     if [ -d "$PROFILE_DIR" ]; then
         echo "Profile '$PROFILE_NAME' already exists."
     else
         echo "Creating profile from template..."
+        mkdir -p "$HOME/.zeos/profiles"
         cp -r "$ZEOS_DIR/profiles/template" "$PROFILE_DIR"
 
         # Update profile with user's name
@@ -154,9 +183,14 @@ if [ "$UPDATE_MODE" = false ]; then
         echo -e "${GREEN}✓ Profile created: $PROFILE_NAME${NC}"
     fi
 else
-    # In update mode, try to detect existing profile (first non-template directory)
-    PROFILE_NAME=$(find "$ZEOS_DIR/profiles" -mindepth 1 -maxdepth 1 -type d \
-        ! -name template -exec basename {} \; | head -1)
+    # In update mode, detect the existing operator profile: state-side first
+    # (~/.zeos/profiles), then the legacy in-repo location for un-migrated installs.
+    PROFILE_NAME=$(find "$HOME/.zeos/profiles" -mindepth 1 -maxdepth 1 -type d \
+        ! -name template -exec basename {} \; 2>/dev/null | head -1)
+    if [ -z "$PROFILE_NAME" ]; then
+        PROFILE_NAME=$(find "$ZEOS_DIR/profiles" -mindepth 1 -maxdepth 1 -type d \
+            ! -name template -exec basename {} \; 2>/dev/null | head -1)
+    fi
     if [ -z "$PROFILE_NAME" ]; then
         PROFILE_NAME="template"
     fi
@@ -339,15 +373,17 @@ zeos is installed at \`~/projects/zeos/\` (Apache 2.0, public release from \`git
 
 - A boot protocol that loads kernel + profile + governance into the agent on demand.
 - A project-identity loader (\`/project <name>\`) that pulls a project's \`SOUL.md\` (identity), \`CLAUDE.md\` (operations doctrine), latest journals, and \`MEMORY.md\` so a cold agent resumes with full context.
-- Automated session-journal writing via \`/snap\` (mid-session) and \`/end\` (close) — written to the zeos-side journal directory, NOT into the project repo.
+- Automated session-journal writing via \`/snap\` (mid-session) and \`/end\` (close), written to the state-side journal directory, NOT into the project repo.
 
-**Active profile:** \`$PROFILE_NAME\` (\`~/projects/zeos/profiles/$PROFILE_NAME/PROFILE.md\`).
+**Active profile:** \`$PROFILE_NAME\` (\`~/.zeos/profiles/$PROFILE_NAME/PROFILE.md\`).
 
-**Where per-project state lives (v1.3.0+):**
+**Where per-project state lives (v1.2.0+):** under the state root \`~/.zeos\` (outside any repo, mirroring \`~/.claude\` and \`~/.codex\`).
 
-- \`SOUL.md\` (identity — WHO):    \`~/projects/zeos/souls/<app_id>/SOUL.md\` (gitignored in zeos)
-- Journals:                         \`~/projects/zeos/journals/<app_id>/\` (gitignored in zeos)
-- \`MEMORY.md\` (curated memory):  \`~/projects/zeos/memory/<app_id>/MEMORY.md\` (gitignored in zeos)
+- \`SOUL.md\` (identity, WHO):    \`~/.zeos/souls/<app_id>/SOUL.md\`
+- Journals:                         \`~/.zeos/journals/<app_id>/\`
+- \`MEMORY.md\` (curated memory):  \`~/.zeos/memory/<app_id>/MEMORY.md\`
+- \`MASTER_ROADMAP.md\` (direction): \`~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md\`
+- Registry:                         \`~/.zeos/apps/REGISTRY.json\`
 - \`CLAUDE.md\` (operations — HOW): \`<project repo>/CLAUDE.md\` (always scaffolded; untracked by default, operator decides commit policy)
 
 The SOUL / CLAUDE.md split: SOUL is identity (mission, constraints, values — rarely changes). CLAUDE.md is operations (build commands, conventions, file paths — changes weekly). Two files, two semantic loads, two change cadences.
@@ -362,7 +398,7 @@ Project repos themselves stay otherwise clean — only \`CLAUDE.md\` lives there
 |---|---|
 | \`/zeos\` | Boot zeos — load kernel + profile + governance protocols into the session. Pass a profile name as arg to override default. |
 | \`/project <name>\` | Load a project: \`SOUL.md\`, project's \`CLAUDE.md\`, latest 1–2 zeos-side session journals, \`MEMORY.md\`. Switches the session into that project's identity. Auto-boots zeos if needed. |
-| \`/newproject <id> ...\` | Register a new project in \`apps/REGISTRY.json\` and scaffold all four files: \`SOUL.md\`, \`MEMORY.md\`, \`journals/README.md\` (all zeos-side, gitignored), and \`CLAUDE.md\` (in the project repo, operator decides commit policy). Local-first — never pushes to a remote registry. |
+| \`/newproject <id> ...\` | Register a new project in \`~/.zeos/apps/REGISTRY.json\` and scaffold five files: \`SOUL.md\`, \`MEMORY.md\`, \`journals/README.md\`, \`MASTER_ROADMAP.md\` (all state-side under \`~/.zeos\`), and \`CLAUDE.md\` (in the project repo, operator decides commit policy). Local-first, never pushes to a remote registry. |
 | \`/snap [note]\` | Append-only session journal entry mid-session. Captures what happened, decisions, next steps. |
 | \`/end\` | Close the session: final journal entry + git commit/push if the repo is in a clean state. |
 | \`/team <subcommand>\` | Multi-agent team orchestration via Overseer MCP (advisor/executor paired-lane patterns, tmux cross-pane messaging). Optional — only when running paired agents alongside Claude. |

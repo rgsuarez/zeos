@@ -42,18 +42,19 @@ If the zeos MCP server is unavailable, follow these manual steps:
 1. **Auto-Boot zeos** — same as above, but read kernel files manually per `/zeos` SKILL.md fallback
 
 2. **Lookup Project** in PROFILE.md fleet table:
-   - Read `~/projects/zeos/profiles/operator/PROFILE.md`
+   - Read `~/.zeos/profiles/operator/PROFILE.md`
    - Find project entry matching `$ARGUMENTS`
    - Extract: repo path, context path, status
 
 3. **Load Project Context:**
-   - Read project SOUL.md from context path (e.g., `~/projects/zeos-apps/<name>/SOUL.md`)
-   - Read project STATE.md if exists
-   - Read latest session journal from `session-journals/`
+   - Read project SOUL.md from `~/.zeos/souls/<app_id>/SOUL.md`
+   - Read MEMORY.md from `~/.zeos/memory/<app_id>/MEMORY.md` if it exists
+   - Read MASTER_ROADMAP.md from `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md` if it exists
+   - Read latest session journal from `~/.zeos/journals/<app_id>/`
 
 4. **Create Journal Stub** (parallel instance detection):
    ```bash
-   JOURNAL_DIR="<context-path>/session-journals"
+   JOURNAL_DIR="$HOME/.zeos/journals/<app_id>"
    DATE=$(date +%Y-%m-%d)
    SEQUENCE=$(ls $JOURNAL_DIR/$DATE-* 2>/dev/null | wc -l | tr -d ' ')
    SEQUENCE=$((SEQUENCE + 1))

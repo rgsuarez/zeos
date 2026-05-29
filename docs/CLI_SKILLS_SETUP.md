@@ -28,7 +28,7 @@ Boots zeos operating system into Project mode.
 **Triggers:** `/zeos`, `/zeos`, "boot zeos"
 
 **What it does:**
-1. Reads profile from `~/projects/zeos/profiles/operator/PROFILE.md`
+1. Reads profile from `~/.zeos/profiles/operator/PROFILE.md`
 2. Loads kernel files (SOUL.md, BOOT_PROTOCOL.md) based on `boot_mode`
 3. Loads core modules (SHELL_PROTOCOL.md, PROFESSIONAL_STANDARD.md)
 4. Outputs zeos splash screen with boot confirmation

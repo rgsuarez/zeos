@@ -82,15 +82,15 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"zeos_boot"
 
 `zeos_snap` and `zeos_end_session` return the **absolute resolved path** of the journal that was written, and verify file existence on disk before reporting success. Contract:
 
-- `zeos_snap` success: `✓ Checkpoint saved to /Users/<user>/projects/zeos/journals/<app_id>/<file>.md`
-- `zeos_end_session` success: handoff text begins with `Journal: /Users/<user>/projects/zeos/journals/<app_id>/<file>.md`
+- `zeos_snap` success: `✓ Checkpoint saved to /Users/<user>/.zeos/journals/<app_id>/<file>.md`
+- `zeos_end_session` success: handoff text begins with `Journal: /Users/<user>/.zeos/journals/<app_id>/<file>.md`
 - Either tool throws an MCP error if `fs.existsSync(journalPath)` fails after the write. No false-success path.
 
 Persistence paths are centralized by `path-resolver.ts`:
 
-- Project SOUL: `~/projects/zeos/souls/<app_id>/SOUL.md`
-- MEMORY.md: `~/projects/zeos/memory/<app_id>/MEMORY.md`
-- Journals: `~/projects/zeos/journals/<app_id>/`
+- Project SOUL: `~/.zeos/souls/<app_id>/SOUL.md`
+- MEMORY.md: `~/.zeos/memory/<app_id>/MEMORY.md`
+- Journals: `~/.zeos/journals/<app_id>/`
 - Project operations doctrine: `<project_root>/CLAUDE.md`
 
 Journal entries use `schema_version: "2.0.0"` frontmatter. `/snap` accepts a backward-compatible `delta` plus structured continuity fields: `objective`, `state`, `open_threads`, `verified`, `assumed`, `blockers`, `dead_ends`, `next_tactical_move`, and `tags`. `/end` writes a MEMORY.md entry with `decay`, `importance`, `tags`, optional `why`, optional `how_to_apply`, optional `refs`, source journal path, and a redaction notice when secrets were removed before persistence.
@@ -188,9 +188,9 @@ If multiple MEMORY entries share the target date and `entry_title` is not suppli
 ### Payload Compilation
 
 - **Kernel**: Loads from `~/projects/zeos/kernel/lean/` (optimized)
-- **Profile**: Loads from `~/projects/zeos/profiles/{profile}/` (fleet table truncated)
-- **Projects**: Context from `apps/REGISTRY.json`, project SOUL, project CLAUDE.md, MEMORY.md, and latest journals
-- **Journals**: Written to `~/projects/zeos/journals/<app_id>/`
+- **Profile**: Loads from `~/.zeos/profiles/{profile}/` (fleet table truncated)
+- **Projects**: Context from `~/.zeos/apps/REGISTRY.json`, project SOUL, project CLAUDE.md, MEMORY.md, and latest journals
+- **Journals**: Written to `~/.zeos/journals/<app_id>/`
 
 ## Dependencies
 

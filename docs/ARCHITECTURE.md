@@ -187,7 +187,7 @@ Lean mode loads compressed kernel skeletons. Full protocols available on-demand.
 
 ## Project Registry
 
-All projects are registered in `apps/REGISTRY.json`:
+All projects are registered in `~/.zeos/apps/REGISTRY.json`:
 
 ```json
 {
@@ -201,11 +201,9 @@ All projects are registered in `apps/REGISTRY.json`:
         "url": "https://github.com/my-org/my-repo",
         "branch": "main"
       },
-      "local_path": "~/projects/zeos-apps/example-project/",
-      "soul_file": "~/projects/zeos-apps/example-project/EXAMPLE_PROJECT_SOUL.md",
-      "journal_location": "{repo}/session-journals/",
-      "aws_account": "<AWS_ACCOUNT_ID>",
-      "capabilities": ["github-persistence", "aws-operational-access"]
+      "local_path": "example-project/",
+      "capabilities": ["github-persistence"],
+      "modules": []
     }
   ]
 }
@@ -213,9 +211,14 @@ All projects are registered in `apps/REGISTRY.json`:
 
 ### Path Resolution
 
-- **SOUL**: `~/projects/zeos/{soul_file}`
-- **Journals**: `~/projects/zeos/{local_path}session-journals/`
-- **MEMORY.md**: `~/projects/zeos/{local_path}MEMORY.md`
+Operator state is resolved by the inject MCP server (`path-resolver.ts`) under
+the state root (`~/.zeos`, env `ZEOS_STATE_ROOT`), keyed by `app_id`:
+
+- **SOUL**: `~/.zeos/souls/<app_id>/SOUL.md`
+- **Journals**: `~/.zeos/journals/<app_id>/`
+- **MEMORY.md**: `~/.zeos/memory/<app_id>/MEMORY.md`
+- **MASTER_ROADMAP.md**: `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md`
+- **CLAUDE.md**: `<local_path>/CLAUDE.md` (in the project repo)
 
 ---
 
@@ -236,7 +239,7 @@ cd ~/projects/zeos/infrastructure/inject && npm install && npm run build
 
 ### Profile Setup
 
-1. Copy `profiles/template/` to `profiles/{yourname}/`
+1. Copy `profiles/template/` to `~/.zeos/profiles/{yourname}/`
 2. Edit `PROFILE.md` with your preferences
 3. Profile is "set and forget" — rarely needs updates
 
@@ -244,7 +247,7 @@ cd ~/projects/zeos/infrastructure/inject && npm install && npm run build
 
 Each user has their own:
 - `~/.claude/settings.json` (MCP config)
-- `~/projects/zeos/profiles/{name}/` (profile)
+- `~/.zeos/profiles/{name}/` (profile)
 
 No shared state. No multi-tenancy needed.
 
@@ -320,7 +323,7 @@ Journals capture work for persistence and handoff.
 
 ### Location
 
-`~/projects/zeos-apps/{app}/session-journals/`
+`~/.zeos/journals/<app_id>/`
 
 ### Naming
 
@@ -405,7 +408,7 @@ continuity:
 ## Directory Structure
 
 ```
-~/projects/zeos/
+~/projects/zeos/                 # the public product repo
 ├── kernel/
 │   ├── SOUL.md              # Identity + values
 │   ├── BOOT_PROTOCOL.md     # Full boot protocol
@@ -415,11 +418,9 @@ continuity:
 │       ├── SHELL_PROTOCOL_LEAN.md
 │       └── CONTINUITY_PROTOCOL_LEAN.md
 ├── profiles/
-│   ├── operator/              # Operator profile
-│   │   └── PROFILE.md
-│   └── template/            # Template for new users
+│   └── template/            # Template only (operator profiles live in ~/.zeos)
 ├── apps/
-│   └── REGISTRY.json        # Project registry (app content in ~/projects/zeos-apps/)
+│   └── REGISTRY.example.json  # Starter template (live registry in ~/.zeos)
 ├── infrastructure/
 │   └── inject/              # Inject MCP server
 │       ├── src/
@@ -428,10 +429,20 @@ continuity:
 ├── modules/
 │   └── constraints/         # Protocol modules
 ├── tools/
-│   └── install.sh           # Installer script
+│   ├── install.sh           # Installer script
+│   ├── migrate-state.py     # Relocates operator state to ~/.zeos
+│   └── newproject.py        # /newproject backend
 └── docs/
     ├── ARCHITECTURE.md      # This file
     └── GETTING_STARTED.md
+
+~/.zeos/                          # operator state (machine-global, never in a repo)
+├── apps/REGISTRY.json        # Live project registry
+├── profiles/<operator>/      # Operator profile(s)
+├── souls/<app_id>/SOUL.md    # Per-project identity
+├── memory/<app_id>/MEMORY.md # Per-project curated memory
+├── journals/<app_id>/        # Per-project session journals
+└── roadmaps/<app_id>/MASTER_ROADMAP.md  # Per-project direction
 ```
 
 ---

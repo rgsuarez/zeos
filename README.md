@@ -112,19 +112,20 @@ All six are installed as Claude Code skills at `~/.claude/skills/`.
 
 ## Where state lives
 
-Per-project state splits between the **zeos repo** (operator-only) and the **project repo** (one team-visible file).
+Per-project state splits between the **state root** `~/.zeos` (operator-only, outside any repo) and the **project repo** (one team-visible file).
 
-| Artifact | Location | Repo |
+| Artifact | Location | Where |
 |---|---|---|
-| Project registry | `~/projects/zeos/apps/REGISTRY.json` | zeos (committed) |
-| `SOUL.md` (identity — WHO) | `~/projects/zeos/souls/<id>/SOUL.md` | zeos (gitignored) |
-| Session journals | `~/projects/zeos/journals/<id>/YYYY-MM-DD-NNN-<agent>.md` | zeos (gitignored) |
-| `MEMORY.md` (curated mid-term) | `~/projects/zeos/memory/<id>/MEMORY.md` | zeos (gitignored) |
-| `CLAUDE.md` (operations — HOW) | `<project>/CLAUDE.md` | Project repo (untracked by default; operator decides commit policy) |
+| Project registry | `~/.zeos/apps/REGISTRY.json` | state root |
+| `SOUL.md` (identity, WHO) | `~/.zeos/souls/<id>/SOUL.md` | state root |
+| Session journals | `~/.zeos/journals/<id>/YYYY-MM-DD-NNN-<agent>.md` | state root |
+| `MEMORY.md` (curated mid-term) | `~/.zeos/memory/<id>/MEMORY.md` | state root |
+| `MASTER_ROADMAP.md` (direction) | `~/.zeos/roadmaps/<id>/MASTER_ROADMAP.md` | state root |
+| `CLAUDE.md` (operations, HOW) | `<project>/CLAUDE.md` | Project repo (untracked by default; operator decides commit policy) |
 
-`/newproject` writes all four scaffolded files. The three zeos-side files stay on the operator's machine — gitignored, never pushed anywhere unless explicitly synced. `CLAUDE.md` is the only file in the project repo — it's what teammates see if you commit it. The default template documents the zeos layout so any agent (or human) entering the project understands where state lives.
+`/newproject` writes all five scaffolded files. The state-root files live under `~/.zeos` (env `ZEOS_STATE_ROOT`), outside any repo, mirroring `~/.claude` and `~/.codex`. `CLAUDE.md` is the only file in the project repo; it's what teammates see if you commit it. The default template documents the layout so any agent (or human) entering the project understands where state lives.
 
-Project repos stay clean: no per-machine `.git/info/exclude` config required for operator state, no risk of leaking personal AI-pair dialogue into a teammate's PR.
+Both the zeos repo and project repos stay clean: operator state never lives in a repo, so the public mirror is byte-identical to any operator's mirror and there is no risk of leaking personal AI-pair dialogue into a teammate's PR.
 
 ### The SOUL / CLAUDE.md split
 
@@ -142,7 +143,7 @@ zeos implements compounding memory through three layers.
 | Tier | Source | Behavior |
 |---|---|---|
 | **Long-term** | Kernel `SOUL.md` + project `SOUL.md` + project `CLAUDE.md` | Always loaded. Defines identity. |
-| **Mid-term** | `~/projects/zeos/memory/<id>/MEMORY.md` | Per-project, curated, decay-tagged. Default 10K token budget. |
+| **Mid-term** | `~/.zeos/memory/<id>/MEMORY.md` | Per-project, curated, decay-tagged. Default 10K token budget. |
 | **Short-term** | Latest 1–2 session journals | Per-project, append-only. Recent decisions, in-flight work. |
 
 `/project <id>` loads all three tiers in a single boot.
@@ -218,12 +219,14 @@ The installer creates yours by copying `profiles/template/` and prompting for na
 
 ## Repository layout
 
+The repo is pure product. Operator state lives outside it under `~/.zeos`.
+
 ```
-zeos/
+zeos/                             (the public product repo)
 ├── kernel/                       Core protocols (SOUL, BOOT_PROTOCOL, lean variants)
 ├── modules/                      Governance (constraints, protocols, commands, behaviors)
-├── profiles/                     Operator profiles (template + yours)
-├── apps/REGISTRY.json            Project registry
+├── profiles/template/            Operator profile template (yours lives in ~/.zeos)
+├── apps/REGISTRY.example.json    Starter registry template (your fleet lives in ~/.zeos)
 ├── infrastructure/
 │   ├── inject/                   Active MCP server (TypeScript)
 │   ├── overseer/                 Multi-agent relay + tmux paired-lane runtime
@@ -231,11 +234,17 @@ zeos/
 │   └── skills/                   Slash-command skills installed to ~/.claude/skills/
 ├── tools/
 │   ├── install.sh                Installer
+│   ├── migrate-state.py          Relocates operator state to ~/.zeos
 │   └── newproject.py             /newproject backend
-├── docs/                         Architecture, getting-started, protocol specs
-├── souls/                        Per-project SOUL.md (gitignored)
-├── journals/                     Per-project session journals (gitignored)
-└── memory/                       Per-project MEMORY.md (gitignored)
+└── docs/                         Architecture, getting-started, protocol specs
+
+~/.zeos/                          (operator state, machine-global, never in a repo)
+├── apps/REGISTRY.json            Your project registry
+├── profiles/<operator>/          Your operator profile
+├── souls/<app_id>/SOUL.md        Per-project identity
+├── memory/<app_id>/MEMORY.md     Per-project curated memory
+├── journals/<app_id>/            Per-project session journals
+└── roadmaps/<app_id>/MASTER_ROADMAP.md   Per-project development direction
 ```
 
 ---

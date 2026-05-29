@@ -316,17 +316,14 @@ The PROFESSIONAL_STANDARD.md document has been operating as a de facto kernel mo
 ## File Naming Convention
 
 ```
-session-journals/{agent}/{YYYY-MM-DD}-{NNN}.md
+~/.zeos/journals/<app_id>/{YYYY-MM-DD}-{NNN}-{agent}.md
 
 Examples:
-- session-journals/claude/2025-12-17-001.md
-- session-journals/board/2025-12-17-001.md
-- session-journals/grok/2025-12-17-001.md
+- ~/.zeos/journals/zeos-dev/2026-05-29-001-claude.md
+- ~/.zeos/journals/zeos-dev/2026-05-29-002-gemini.md
 ```
 
-**Numbering:** Sequential within date. First session of day is `001`, second is `002`, etc.
-
-**Board Sessions:** Cross-agent deliberations use `session-journals/board/`.
+**Numbering:** Sequential within date. First session of day is `001`, second is `002`, etc. The agent identifier is a filename suffix so parallel instances do not collide.
 
 ---
 

@@ -5,30 +5,45 @@ import * as fs from "fs";
 /**
  * Zeos root paths.
  *
- * Per-project operator state lives INSIDE the zeos repo, gitignored:
- *   ~/projects/zeos/souls/<app_id>/SOUL.md            ← project identity (WHO)
- *   ~/projects/zeos/journals/<app_id>/                ← session journals
- *   ~/projects/zeos/memory/<app_id>/MEMORY.md         ← curated mid-term memory
+ * As of v1.2.0 there are two distinct roots:
  *
- * All three are gitignored in the zeos repo, so they never leave the operator's
- * machine unless explicitly synced. This keeps project repos themselves 100%
- * clean — no .git/info/exclude config required, no risk of leaking personal
- * session context or operator-curated identity into a teammate's PR.
+ *   ZEOS_REPO_ROOT  (default ~/projects/zeos) - the public product: kernel,
+ *                   modules, infrastructure, tools, docs, profiles/template/.
+ *   ZEOS_STATE_ROOT (default ~/.zeos)         - operator-mutated state, mirroring
+ *                   the ~/.claude and ~/.codex convention.
  *
- * The project's own CLAUDE.md (operations doctrine — HOW it builds, deploys,
- * conventions) lives in the project repo at <local_path>/CLAUDE.md. It's
- * optional: operators decide per-project whether the team has agreed on a
- * shared CLAUDE.md. When absent, the boot payload just notes that.
+ * Per-project operator state lives under ZEOS_STATE_ROOT:
+ *   ~/.zeos/apps/REGISTRY.json            ← project registry
+ *   ~/.zeos/profiles/<operator>/PROFILE.md ← operator profile
+ *   ~/.zeos/souls/<app_id>/SOUL.md         ← project identity (WHO)
+ *   ~/.zeos/journals/<app_id>/             ← session journals
+ *   ~/.zeos/memory/<app_id>/MEMORY.md      ← curated mid-term memory
+ *   ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md ← development direction
  *
- * The split: SOUL = WHO the project is (identity, mission, constraints) —
- * rarely changes. CLAUDE.md = HOW the project operates (build commands,
- * file paths, conventions) — changes weekly. Two files, two semantic loads,
- * two change cadences.
+ * Keeping state out of the repo means project repos stay 100% clean and the
+ * public zeos mirror is byte-identical to any operator's mirror.
+ *
+ * Both roots honor an environment override (ZEOS_REPO_ROOT / ZEOS_STATE_ROOT)
+ * and are kept in the established "~/"-prefixed form so expandPath() resolves
+ * them at read time. An absolute override (no leading ~/) passes through
+ * expandPath unchanged.
+ *
+ * The project's own CLAUDE.md (operations doctrine - HOW it builds, deploys,
+ * conventions) still lives in the project repo at <local_path>/CLAUDE.md.
+ *
+ * The split: SOUL = WHO the project is (identity, mission, constraints) -
+ * rarely changes. CLAUDE.md = HOW the project operates - changes weekly.
  */
-export const ZEOS_ROOT = "~/projects/zeos";
-export const ZEOS_SOULS_ROOT = `${ZEOS_ROOT}/souls`;
-export const ZEOS_JOURNALS_ROOT = `${ZEOS_ROOT}/journals`;
-export const ZEOS_MEMORY_ROOT = `${ZEOS_ROOT}/memory`;
+export const ZEOS_REPO_ROOT = process.env.ZEOS_REPO_ROOT ?? "~/projects/zeos";
+export const ZEOS_STATE_ROOT = process.env.ZEOS_STATE_ROOT ?? "~/.zeos";
+
+/** @deprecated v1.2.0; alias of ZEOS_REPO_ROOT for product paths. Removed in v1.3.0. */
+export const ZEOS_ROOT = ZEOS_REPO_ROOT;
+
+export const ZEOS_SOULS_ROOT = `${ZEOS_STATE_ROOT}/souls`;
+export const ZEOS_JOURNALS_ROOT = `${ZEOS_STATE_ROOT}/journals`;
+export const ZEOS_MEMORY_ROOT = `${ZEOS_STATE_ROOT}/memory`;
+export const ZEOS_ROADMAPS_ROOT = `${ZEOS_STATE_ROOT}/roadmaps`;
 
 /**
  * Legacy fallback root for apps registered before v1.2.0 that explicitly
@@ -42,7 +57,7 @@ export interface PathResolverApp {
   local_path: string;
   /** @deprecated as of v1.2.0; journals always live in ZEOS_JOURNALS_ROOT/<app_id>/ */
   journal_location?: string;
-  /** @deprecated as of v1.3.0; SOUL.md is at ZEOS_SOULS_ROOT/<app_id>/SOUL.md (zeos-side) */
+  /** @deprecated as of v1.3.0; SOUL.md is at ZEOS_SOULS_ROOT/<app_id>/SOUL.md (state-side) */
   soul_file?: string;
   repo?: {
     url?: string;
@@ -61,32 +76,69 @@ export function expandPath(p: string): string {
   return p;
 }
 
+const _legacyNotified = new Set<string>();
+
 /**
- * Where the project's SOUL.md lives.
- * Always: ~/projects/zeos/souls/<app_id>/SOUL.md
+ * v1.2.0 read-time compatibility: prefer the state-root path; if it does not
+ * exist but a legacy repo-root path does, return the legacy path and emit a
+ * one-time deprecation notice. Defaults to the state path when neither exists.
  *
- * This is the project's IDENTITY file — mission, constraints, values.
- * Lives in the zeos repo (gitignored), NOT in the project repo. Created
- * by `/newproject` automatically.
+ * READ-ONLY. Write paths always use the canonical state-root resolvers below,
+ * so migration never writes back into the repo tree. Legacy fallback is
+ * removed in v1.3.0.
+ */
+export function stateFirst(statePath: string, legacyPath: string): string {
+  if (fs.existsSync(expandPath(statePath))) return statePath;
+  if (fs.existsSync(expandPath(legacyPath))) {
+    if (!_legacyNotified.has(legacyPath)) {
+      _legacyNotified.add(legacyPath);
+      console.error(
+        `[zeos] reading legacy state at ${legacyPath}; run ` +
+          `'python3 tools/migrate-state.py --apply' to relocate it to ` +
+          `${statePath} (legacy support removed in v1.3.0)`
+      );
+    }
+    return legacyPath;
+  }
+  return statePath;
+}
+
+/**
+ * Where the project's SOUL.md lives (canonical, state-side).
+ * Always: ~/.zeos/souls/<app_id>/SOUL.md
+ *
+ * This is the project's IDENTITY file - mission, constraints, values.
+ * Created by `/newproject` automatically.
  */
 export function resolveSoulPath(app: PathResolverApp): string {
   return `${ZEOS_SOULS_ROOT}/${app.app_id}/SOUL.md`;
 }
 
 /**
- * Where session journals for this project live.
- * Always: ~/projects/zeos/journals/<app_id>/
+ * Where session journals for this project live (canonical, state-side).
+ * Always: ~/.zeos/journals/<app_id>/
  */
 export function resolveJournalPath(app: PathResolverApp): string {
   return `${ZEOS_JOURNALS_ROOT}/${app.app_id}/`;
 }
 
 /**
- * Where the project's MEMORY.md lives.
- * Always: ~/projects/zeos/memory/<app_id>/MEMORY.md
+ * Where the project's MEMORY.md lives (canonical, state-side).
+ * Always: ~/.zeos/memory/<app_id>/MEMORY.md
  */
 export function resolveMemoryPath(app: PathResolverApp): string {
   return `${ZEOS_MEMORY_ROOT}/${app.app_id}/MEMORY.md`;
+}
+
+/**
+ * Where the project's MASTER_ROADMAP.md lives (canonical, state-side).
+ * Always: ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md
+ *
+ * The master roadmap is mostly-static development direction (desired end
+ * state, North Star, phases). Scaffolded by `/newproject`; editable after.
+ */
+export function resolveRoadmapPath(app: PathResolverApp): string {
+  return `${ZEOS_ROADMAPS_ROOT}/${app.app_id}/MASTER_ROADMAP.md`;
 }
 
 /**
@@ -114,8 +166,8 @@ export function resolveProjectRoot(app: PathResolverApp): string {
 
 /**
  * Where the project's CLAUDE.md (operations doctrine) lives.
- * Always at <project_root>/CLAUDE.md. May or may not exist on disk —
- * scaffold is opt-in (newproject.py --claude-md). Callers must handle missing files.
+ * Always at <project_root>/CLAUDE.md. May or may not exist on disk -
+ * scaffold is opt-in. Callers must handle missing files.
  */
 export function resolveProjectClaudeMdPath(app: PathResolverApp): string {
   return `${resolveProjectRoot(app)}CLAUDE.md`;

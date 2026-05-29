@@ -129,7 +129,7 @@ The Memory Architecture defines:
 | **Token Budget** | 500-1,500 tokens (latest journal), 300-800 tokens (blueprint summary) |
 | **Change Frequency** | Every session |
 | **Load Trigger** | Boot (latest + prior if continuation) |
-| **Persistence** | Git repository (session-journals/ directory) |
+| **Persistence** | State root (`~/.zeos/journals/<app_id>/`) |
 | **Owner** | Agent (writes automatically via checkpoints) |
 
 **Questions Answered:**
@@ -211,7 +211,7 @@ USER OPENS CHANNEL / RUNS /project
 │  G3: Load profiles/{id}/PROFILE.md                             │
 │      → Agent knows WHO THE OPERATOR IS                         │
 │                                                                │
-│  G6: Load ~/projects/zeos-apps/{id}/*_SOUL.md                   │
+│  G6: Load ~/.zeos/souls/{id}/SOUL.md                           │
 │      → Agent knows THIS PROJECT'S IDENTITY                     │
 │                                                                │
 │  G7: Execute Mandatory Boot Sequence                           │
@@ -257,7 +257,7 @@ USER OPENS CHANNEL / RUNS /project
 
 | Trigger | From | To | Mechanism |
 |---------|------|-----|-----------|
-| Session age > 30 days | T2 (journal) | Archive | Move to `session-journals/archive/` |
+| Session age > 30 days | T2 (journal) | Archive | Move to `~/.zeos/journals/<app_id>/archive/` |
 | Blueprint complete | T2 (blueprint) | Archive | Move to `blueprints/archive/` |
 | Roadmap phase complete | T1 (active phase) | T1 (completed) | Update MASTER_ROADMAP status |
 
@@ -302,7 +302,7 @@ When multiple agents work on the same project:
 - Journal files are instance-scoped (no collision)
 - Git coordinates final state
 
-**Reference:** `~/projects/zeos-apps/zeos-dev/docs/PARALLEL_INSTANCE_PROTOCOL.md`
+**Reference:** the parallel-instance protocol documentation
 
 ---
 
@@ -330,7 +330,7 @@ For projects implementing zeos memory:
 
 - [ ] SOUL.md exists with project identity
 - [ ] MASTER_ROADMAP.md exists with direction
-- [ ] `session-journals/` directory exists
+- [ ] `~/.zeos/journals/<app_id>/` directory exists
 - [ ] Boot sequence loads T1 files
 - [ ] Boot sequence loads latest journal (T2)
 - [ ] `/snap` writes to journal
@@ -500,7 +500,7 @@ Project SOULs can define path aliases to prevent boot failures when repositories
 # In project SOUL.md frontmatter
 paths:
   roadmap: ["docs/roadmap/", "roadmap/", "ROADMAP.md"]
-  journal: ["session-journals/", "journals/"]
+  journal: ["~/.zeos/journals/<app_id>/"]
   blueprint: ["blueprints/", "docs/blueprints/"]
   memory: ["MEMORY.md", "memory/MEMORY.md"]
 ```

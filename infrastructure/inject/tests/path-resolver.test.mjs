@@ -183,8 +183,10 @@ test("resolveJournalPath: zeos-apps-only fallback uses zeos-side journal root", 
   assert.equal(resolveJournalPath(app), `${ZEOS_JOURNALS_ROOT}/example-tracker/`);
 });
 
-test("regression: repo-backed registry entry routes to zeos-side journals", () => {
-  // v1.3+ keeps journals in the zeos repo, not in project repos or zeos-apps.
+test("regression: repo-backed registry entry routes to state-side journals", () => {
+  // v1.2.0+ keeps journals under the state root (~/.zeos), not in project
+  // repos, the zeos repo, or zeos-apps. Assert against the canonical constant
+  // so the test stays correct under any ZEOS_STATE_ROOT override.
   const app = {
     app_id: "example-app",
     local_path: "example-app/",
@@ -193,5 +195,6 @@ test("regression: repo-backed registry entry routes to zeos-side journals", () =
   };
   const result = resolveJournalPath(app);
   assert.equal(result.includes("zeos-apps"), false);
-  assert.match(result, /^~\/projects\/zeos\/journals\/example-app\/$/);
+  assert.equal(result.includes("projects/zeos/journals"), false);
+  assert.equal(result, `${ZEOS_JOURNALS_ROOT}/example-app/`);
 });

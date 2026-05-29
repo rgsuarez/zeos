@@ -21,13 +21,14 @@ profiles/
     └── PROFILE.md
 ```
 
-The public starter ships with `template/` only. Your profile lives at `profiles/operator/` — created by copying the template and customizing.
+The public starter ships with `template/` only. As of v1.2.0 your profile is operator state: it lives at `~/.zeos/profiles/<name>/` (outside any repo, env `ZEOS_STATE_ROOT`), created by copying the template and customizing.
 
 ## Creating Your Profile
 
-1. **Copy the template:**
+1. **Copy the template into the state root:**
    ```bash
-   cp -r profiles/template profiles/operator
+   mkdir -p ~/.zeos/profiles
+   cp -r profiles/template ~/.zeos/profiles/operator
    ```
 
 2. **Customize `PROFILE.md`:**
@@ -37,24 +38,20 @@ The public starter ships with `template/` only. Your profile lives at `profiles/
    - Configure communication preferences
    - Set boot_mode (`lean` is default)
 
-3. **Create session-journals directory (optional):**
-   ```bash
-   mkdir -p profiles/operator/session-journals/claude
-   ```
-
-4. **Boot zeos with your profile:**
+3. **Boot zeos with your profile:**
    ```
    /zeos
    ```
 
-   When no profile is specified, zeos will look for `profiles/operator/` if it's the only non-template profile present. Otherwise specify explicitly.
+   When no profile is specified, zeos looks for the first profile under `~/.zeos/profiles/`. Otherwise specify explicitly.
+
+Session journals are NOT stored under the profile. They live per-project at `~/.zeos/journals/<app_id>/`, written by `/snap` and `/end`.
 
 ## Profile Contents
 
 | File | Purpose | Required |
 |------|---------|----------|
 | `PROFILE.md` | Identity, phase, preferences, technical context | Yes |
-| `session-journals/` | Your session history by agent | Recommended |
 | `context/` | Project-specific context packs | Optional |
 
 ## Boot Default

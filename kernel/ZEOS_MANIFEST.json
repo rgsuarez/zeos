@@ -5,7 +5,7 @@
   "generated_by": "Claude (system)",
   "location": "kernel/ZEOS_MANIFEST.json",
   "description": "The System Ledger: Complete Bill of Materials for zeos Core. This file is the single source of truth for what constitutes the zeos Kernel and enables automated upgrade operations.",
-  "architecture_note": "Architecture reference docs (ZEOS_ARCH_SPEC.md, SECRETS_MODEL.md, CAPABILITY_REGISTRY.json) live in apps/zeos-dev/docs/ and are loaded on-demand during zeos development, not during standard boot.",
+  "architecture_note": "Optional architecture reference docs (ZEOS_ARCH_SPEC.md, SECRETS_MODEL.md, CAPABILITY_REGISTRY.json), when present, live under docs/ and are loaded on-demand during zeos development, not during standard boot.",
   "criticality_tiers": {
     "L0": {
       "name": "Kernel (Immutable)",
@@ -156,12 +156,12 @@
     ],
     "registry": [
       {
-        "path": "apps/REGISTRY.json",
+        "path": "~/.zeos/apps/REGISTRY.json",
         "criticality": "L1S",
         "version": "1.2.1",
         "required": true,
         "auto_load": false,
-        "description": "Fleet registry \u2014 apps may add entries"
+        "description": "Fleet registry (operator state, v1.2.0+); apps may add entries. Starter template ships at apps/REGISTRY.example.json"
       }
     ],
     "tools": [
@@ -202,7 +202,7 @@
     ],
     "development_reference": [
       {
-        "path": "apps/zeos-dev/docs/ZEOS_ARCH_SPEC.md",
+        "path": "docs/ZEOS_ARCH_SPEC.md",
         "criticality": "reference",
         "version": "1.0.1",
         "required": false,
@@ -210,7 +210,7 @@
         "description": "Architecture constitution \u2014 loaded during zeos development only"
       },
       {
-        "path": "apps/zeos-dev/docs/SECRETS_MODEL.md",
+        "path": "docs/SECRETS_MODEL.md",
         "criticality": "reference",
         "version": "2.0.0",
         "required": false,
@@ -218,7 +218,7 @@
         "description": "Security architecture \u2014 loaded during zeos development only"
       },
       {
-        "path": "apps/zeos-dev/docs/CAPABILITY_REGISTRY.json",
+        "path": "docs/CAPABILITY_REGISTRY.json",
         "criticality": "reference",
         "version": "2.0.0",
         "required": false,
@@ -228,9 +228,9 @@
     ]
   },
   "excluded_from_core": {
-    "app_souls": "apps/*/SOUL.md \u2014 Federated, apps own these",
-    "operator_profiles": "profiles/{operator_id}/* \u2014 Per-operator",
-    "session_journals": "*/session-journals/* \u2014 Ephemeral",
+    "app_souls": "~/.zeos/souls/<app_id>/SOUL.md (operator state, per project)",
+    "operator_profiles": "~/.zeos/profiles/<operator>/ (operator state, per-operator)",
+    "journals": "~/.zeos/journals/<app_id>/ (operator state, ephemeral)",
     "documentation": "docs/* \u2014 Reference only",
     "infrastructure": "lambda/*, web-client/* \u2014 Deployment-specific"
   },
@@ -261,7 +261,7 @@
       "date": "2026-01-03",
       "changes": [
         "PUBLIC RELEASE REFACTOR: Removed ARCH_SPEC, SECRETS_MODEL, CAPABILITY_REGISTRY from kernel section",
-        "Added development_reference section for architecture docs in apps/zeos-dev/docs/",
+        "Added development_reference section for architecture docs in docs/",
         "Updated template section to reflect PROFILE.md consolidation",
         "Added CONTINUITY_PROTOCOL to modules (auto-load)",
         "Updated all version numbers to match actual files",

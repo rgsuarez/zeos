@@ -5,6 +5,52 @@ All notable changes to zeos are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-29
+
+### Storage contract: operator state relocated to `~/.zeos`
+
+All operator-mutated state moves out of the repo tree into a machine-global
+state root, `~/.zeos`, mirroring the `~/.claude` and `~/.codex` convention. The
+repo becomes pure product, so the public mirror is byte-identical to any
+operator's mirror and operator data can never be committed to a tracked file.
+
+Two roots, both environment-overridable:
+
+- `ZEOS_REPO_ROOT` (default `~/projects/zeos`): kernel, modules, infrastructure, tools, docs, `profiles/template/`, `apps/REGISTRY.example.json`.
+- `ZEOS_STATE_ROOT` (default `~/.zeos`): `apps/REGISTRY.json`, `profiles/<operator>/`, `souls/`, `memory/`, `journals/`, `roadmaps/`.
+
+The registry is no longer committed to the repo. The repo ships
+`apps/REGISTRY.example.json` as the starter template; `/newproject` and the
+installer write the live registry to `~/.zeos/apps/REGISTRY.json`.
+
+### Master roadmap scaffold
+
+`/newproject` now scaffolds a fifth artifact, `MASTER_ROADMAP.md`, at
+`~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md`: the project's stable development
+direction (desired end state, North Star, phases, current milestone, decision
+log). `/project` surfaces it at boot between SOUL and memory when present. This
+closes a protocol-vs-tool drift where `NEW_PROJECT_PROTOCOL.md` advertised a
+master roadmap the tool never created.
+
+### Migration
+
+- New `tools/migrate-state.py` (Python stdlib only): copy-then-verify (SHA-256), idempotent, with `--dry-run`, `--apply`, `--backup`, `--cleanup-repo-state`, `--registry-source`, and `--repo-root` / `--state-root` overrides. Refuses to run if the state root is inside the repo root.
+- `tools/install.sh` snapshots and relocates state on update (pre-pull backup when the tool is present, post-pull migration that ingests the registry from the backup).
+- `tools/uninstall.sh` no longer removes operator state by default; pass `--purge-state` to delete `~/.zeos`.
+- Safe-update instructions, including the one-time manual path for the v1.1.0 jump, are in [docs/UPGRADING_TO_V1_2_0.md](docs/UPGRADING_TO_V1_2_0.md).
+
+### Fixed
+
+- Full boot read a non-existent `modules/constraints/SHELL_PROTOCOL.md`; it now reads the real `modules/constraints/ZEOS_MODULE_002_SHELL_PROTOCOL.md`, and that file's state-path references are reconciled to `~/.zeos`.
+
+### Compatibility
+
+The inject MCP server reads state-first with a one-release fallback to the old
+in-repo locations and a deprecation notice; writes always go to `~/.zeos`. The
+slash-command surface and the boot/journaling API are unchanged. Existing
+installs are migrated automatically by `install.sh --update`. The legacy
+fallback is removed in v1.3.0.
+
 ## [1.0.0] — 2026-05-21
 
 ### Initial public release

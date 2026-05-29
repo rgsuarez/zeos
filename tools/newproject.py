@@ -4,23 +4,26 @@ zeos /newproject — register and scaffold a new project (local-first).
 
 Operates LOCALLY only. No GitHub API calls, no auto-push.
 
-Scaffolds four files by default. Project repo gets one (CLAUDE.md), zeos repo
-gets the other three:
+Scaffolds five files by default. The project repo gets one (CLAUDE.md); the
+operator state root (~/.zeos, env ZEOS_STATE_ROOT) gets the other four:
 
-| Artifact      | Location                                              | Purpose                          |
-|---------------|-------------------------------------------------------|----------------------------------|
-| CLAUDE.md     | <local_path>/CLAUDE.md  (in the project repo)         | Operations doctrine (HOW)        |
-| SOUL.md       | ~/projects/zeos/souls/<app_id>/SOUL.md                | Project identity (WHO)           |
-| MEMORY.md     | ~/projects/zeos/memory/<app_id>/MEMORY.md             | Curated mid-term memory          |
-| journals/     | ~/projects/zeos/journals/<app_id>/                    | Append-only session journals     |
+| Artifact         | Location                                       | Purpose                      |
+|------------------|------------------------------------------------|------------------------------|
+| CLAUDE.md        | <local_path>/CLAUDE.md  (in the project repo)  | Operations doctrine (HOW)    |
+| SOUL.md          | ~/.zeos/souls/<app_id>/SOUL.md                 | Project identity (WHO)       |
+| MEMORY.md        | ~/.zeos/memory/<app_id>/MEMORY.md              | Curated mid-term memory      |
+| journals/        | ~/.zeos/journals/<app_id>/                     | Append-only session journals |
+| MASTER_ROADMAP.md| ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md    | Development direction        |
 
 CLAUDE.md is the only file written into the project repo — it's what teammates
 see if you ever commit it. Default content covers mission/stack/conventions
 plus a documentation block describing the zeos integration. Edit freely after
 scaffold; zeos won't overwrite it.
 
-SOUL.md, MEMORY.md, and journals/ live entirely in the zeos repo (all three
-directories are gitignored in zeos by default). Project repos stay 100% clean.
+SOUL.md, MEMORY.md, journals/, and MASTER_ROADMAP.md live under the operator
+state root (~/.zeos), outside any repo, mirroring the ~/.claude and ~/.codex
+convention. The registry (~/.zeos/apps/REGISTRY.json) is operator state too.
+Project repos stay 100% clean.
 
 Usage:
     python tools/newproject.py <app_id> [options]
@@ -33,13 +36,14 @@ Options:
     --local-path=<path>   Absolute or ~-relative path where the project lives.
                           Default: ~/projects/<app_id>/
     --no-scaffold         Skip all scaffold writes (registry only).
-    --no-commit           Skip the local git commit (just edit REGISTRY.json).
+    --no-commit           Accepted for backward compatibility; no-op (the
+                          registry is operator-local and never committed).
     --yes / -y            Skip the confirmation prompt
     --version             Print version and exit
 
 Examples:
     python tools/newproject.py my-app --type=internal --repo=https://github.com/your-org/my-app
-    python tools/newproject.py side-tool --type=utility --no-commit
+    python tools/newproject.py side-tool --type=utility
 """
 
 from __future__ import annotations
@@ -48,24 +52,28 @@ import argparse
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 VALID_TYPES = {"internal", "venture", "research", "infrastructure", "utility"}
 APP_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
-# Resolve zeos repo root from this script's location (tools/newproject.py).
-ZEOS_ROOT = Path(__file__).resolve().parent.parent
-REGISTRY_PATH = ZEOS_ROOT / "apps" / "REGISTRY.json"
-SOULS_ROOT = ZEOS_ROOT / "souls"
-JOURNALS_ROOT = ZEOS_ROOT / "journals"
-MEMORY_ROOT = ZEOS_ROOT / "memory"
+# Two roots as of v1.2.0:
+#   ZEOS_REPO_ROOT  - the public product (this repo), resolved from the script.
+#   ZEOS_STATE_ROOT - operator-mutated state (default ~/.zeos), env-overridable.
+# All operator state (registry, profiles, souls, memory, journals, roadmaps)
+# lives under the state root so the repo stays a clean public product.
+ZEOS_REPO_ROOT = Path(__file__).resolve().parent.parent
+ZEOS_STATE_ROOT = Path(os.environ.get("ZEOS_STATE_ROOT", Path.home() / ".zeos"))
+REGISTRY_PATH = ZEOS_STATE_ROOT / "apps" / "REGISTRY.json"
+SOULS_ROOT = ZEOS_STATE_ROOT / "souls"
+JOURNALS_ROOT = ZEOS_STATE_ROOT / "journals"
+MEMORY_ROOT = ZEOS_STATE_ROOT / "memory"
+ROADMAPS_ROOT = ZEOS_STATE_ROOT / "roadmaps"
 
 
 def fail(msg: str, code: int = 1) -> None:
@@ -85,9 +93,28 @@ def validate_app_id(app_id: str) -> None:
         )
 
 
+def _starter_registry() -> dict:
+    """Minimal registry used when no state-side registry exists yet.
+
+    Prefers the repo's apps/REGISTRY.example.json template; falls back to a
+    hardcoded empty registry so /newproject works on a fresh state root even
+    before install.sh has bootstrapped one.
+    """
+    example = ZEOS_REPO_ROOT / "apps" / "REGISTRY.example.json"
+    if example.exists():
+        try:
+            data = json.loads(example.read_text())
+            data["apps"] = []
+            return data
+        except json.JSONDecodeError:
+            pass
+    return {"registry_version": "1.0.0", "schema_version": "1.0", "apps": []}
+
+
 def load_registry() -> dict:
     if not REGISTRY_PATH.exists():
-        fail(f"registry not found at {REGISTRY_PATH}")
+        # Fresh state root: start from the starter template rather than failing.
+        return _starter_registry()
     try:
         return json.loads(REGISTRY_PATH.read_text())
     except json.JSONDecodeError as e:
@@ -95,6 +122,7 @@ def load_registry() -> dict:
 
 
 def save_registry(registry: dict) -> None:
+    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(registry, indent=2) + "\n"
     REGISTRY_PATH.write_text(text)
 
@@ -164,11 +192,12 @@ CLAUDE_MD_TEMPLATE = """# Project: {name}
 
 ## zeos context
 
-This project is registered with zeos. The operator's session-level context lives in the zeos repo (NOT in this project repo):
+This project is registered with zeos. The operator's session-level context lives under the zeos state root `~/.zeos` (NOT in this project repo):
 
-- Project SOUL (identity, mission, constraints): `~/projects/zeos/souls/{app_id}/SOUL.md`
-- Curated memory (cross-session): `~/projects/zeos/memory/{app_id}/MEMORY.md`
-- Session journals (append-only): `~/projects/zeos/journals/{app_id}/`
+- Project SOUL (identity, mission, constraints): `~/.zeos/souls/{app_id}/SOUL.md`
+- Curated memory (cross-session): `~/.zeos/memory/{app_id}/MEMORY.md`
+- Session journals (append-only): `~/.zeos/journals/{app_id}/`
+- Master roadmap (development direction): `~/.zeos/roadmaps/{app_id}/MASTER_ROADMAP.md`
 
 Operators with zeos installed boot this project with:
 
@@ -189,7 +218,7 @@ name: "{name}"
 type: {project_type}
 classification: "PROJECT_SOUL"
 created: "{timestamp}"
-location: "~/projects/zeos/souls/{app_id}/SOUL.md"
+location: "~/.zeos/souls/{app_id}/SOUL.md"
 ---
 
 # Soul: {name}
@@ -224,8 +253,9 @@ Core principles that govern decisions when the explicit doctrine is silent.
 ## Cross-references
 
 - Operations doctrine (build, deploy, conventions): `<local_path>/CLAUDE.md`
-- Curated memory: `~/projects/zeos/memory/{app_id}/MEMORY.md`
-- Session journals: `~/projects/zeos/journals/{app_id}/`
+- Curated memory: `~/.zeos/memory/{app_id}/MEMORY.md`
+- Session journals: `~/.zeos/journals/{app_id}/`
+- Master roadmap: `~/.zeos/roadmaps/{app_id}/MASTER_ROADMAP.md`
 
 ---
 
@@ -263,13 +293,13 @@ created: "YYYY-MM-DDTHH:MM:SSZ"
 Append-only. Never rewrite past entries. Write so a future agent can pick up
 cold with no other context.
 
-## Why these live in the zeos repo
+## Why these live under the zeos state root
 
 Session journals are operator-side artifacts: debug attempts, decisions in
 flight, working context. Keeping them in the project repo would either leak
 personal context into teammates' clones, require per-machine `.git/info/exclude`
-config, or risk accidental commits. Pinning them to `~/projects/zeos/journals/`
-(gitignored) keeps the project repo clean regardless of who clones it.
+config, or risk accidental commits. Pinning them to `~/.zeos/journals/`
+(outside any repo) keeps the project repo clean regardless of who clones it.
 
 ## Continuity Packet
 
@@ -332,12 +362,77 @@ last_updated: "{timestamp}"
 -->
 """
 
+MASTER_ROADMAP_TEMPLATE = """---
+document: "MASTER_ROADMAP"
+project: {app_id}
+name: "{name}"
+type: {project_type}
+status: "draft"
+created: "{timestamp}"
+last_updated: "{timestamp}"
+location: "~/.zeos/roadmaps/{app_id}/MASTER_ROADMAP.md"
+active_blueprint: null
+---
+
+# Master Roadmap: {name}
+
+> Stable development direction for this project. Mostly static: update it when
+> the intended path changes, not every session. For session-by-session work,
+> use the journals; for curated mid-term context, use MEMORY.md.
+
+## Document Status
+
+Draft. Revise as the project's direction firms up.
+
+## North Star / Desired End State
+
+<One paragraph: the destination. What is unambiguously true when this project
+has succeeded? Write it so any contributor can tell whether a change moves
+toward or away from it.>
+
+## Intent
+
+<The WHY behind the project, stated so a contributor can adapt to changed
+conditions without re-asking. Not the how; the purpose and the boundaries of
+acceptable solutions.>
+
+## Roadmap Phases
+
+1. <Phase 1 - name and one-line outcome>
+2. <Phase 2 - name and one-line outcome>
+3. <Phase 3 - name and one-line outcome>
+
+## Current Milestone
+
+<The single milestone in flight right now, and the concrete signal that marks
+it done.>
+
+## Out of Scope / Not Yet
+
+- <Explicitly excluded, so contributors do not chase it>
+- <Deferred until a later phase>
+
+## Decision Log
+
+| Date | Decision | Why |
+|------|----------|-----|
+| {timestamp} | Roadmap scaffolded | Project registered with zeos |
+
+## Change Discipline
+
+This file is stable guidance, not a session journal. Edit it when the intended
+path changes (new phase, scope shift, reversed decision). Record what changed
+and why in the Decision Log, and bump `last_updated` in the frontmatter. Routine
+session progress belongs in the journals, not here.
+"""
+
 
 def scaffold_zeos_side(app_id: str, name: str, project_type: str, local_path: Path) -> list[str]:
-    """Create the zeos-side scaffolding:
-    - ~/projects/zeos/souls/<app_id>/SOUL.md       (project identity)
-    - ~/projects/zeos/journals/<app_id>/README.md  (journal dir + naming convention)
-    - ~/projects/zeos/memory/<app_id>/MEMORY.md    (curated memory)
+    """Create the state-side scaffolding (under ~/.zeos):
+    - ~/.zeos/souls/<app_id>/SOUL.md                  (project identity)
+    - ~/.zeos/journals/<app_id>/README.md             (journal dir + convention)
+    - ~/.zeos/memory/<app_id>/MEMORY.md               (curated memory)
+    - ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md     (development direction)
 
     Returns list of files created (skips existing files; never overwrites).
     """
@@ -381,6 +476,35 @@ def scaffold_zeos_side(app_id: str, name: str, project_type: str, local_path: Pa
         )
         created.append(str(memory_md))
 
+    created.extend(scaffold_roadmap(app_id, name, project_type))
+
+    return created
+
+
+def scaffold_roadmap(app_id: str, name: str, project_type: str) -> list[str]:
+    """Create ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md.
+
+    The master roadmap is the project's stable development direction (desired
+    end state, North Star, phases). State-side operator artifact. Never
+    overwrites an existing roadmap; operator edits are preserved.
+    """
+    created: list[str] = []
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    roadmap_dir = ROADMAPS_ROOT / app_id
+    roadmap_dir.mkdir(parents=True, exist_ok=True)
+    roadmap_md = roadmap_dir / "MASTER_ROADMAP.md"
+    if not roadmap_md.exists():
+        roadmap_md.write_text(
+            MASTER_ROADMAP_TEMPLATE.format(
+                app_id=app_id,
+                name=name,
+                project_type=project_type,
+                timestamp=timestamp,
+            )
+        )
+        created.append(str(roadmap_md))
+
     return created
 
 
@@ -408,37 +532,15 @@ def scaffold_project_claude_md(local_path: Path, app_id: str, name: str, project
 
 
 def git_commit_registry(app_id: str) -> tuple[bool, str]:
-    """Commit apps/REGISTRY.json change to the local zeos repo. No push."""
-    if not (ZEOS_ROOT / ".git").exists():
-        return False, "zeos directory is not a git repo; skipping commit"
-    if not shutil.which("git"):
-        return False, "git not on PATH; skipping commit"
+    """No-op as of v1.2.0.
 
-    try:
-        subprocess.run(
-            ["git", "-C", str(ZEOS_ROOT), "add", "apps/REGISTRY.json"],
-            check=True, capture_output=True, text=True,
-        )
-        result = subprocess.run(
-            ["git", "-C", str(ZEOS_ROOT), "diff", "--cached", "--quiet"],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            return False, "no staged changes in apps/REGISTRY.json (already up to date?)"
-        subprocess.run(
-            [
-                "git", "-C", str(ZEOS_ROOT), "commit",
-                "-m", f"chore(registry): register {app_id}",
-            ],
-            check=True, capture_output=True, text=True,
-        )
-        rev = subprocess.run(
-            ["git", "-C", str(ZEOS_ROOT), "rev-parse", "--short", "HEAD"],
-            check=True, capture_output=True, text=True,
-        ).stdout.strip()
-        return True, rev
-    except subprocess.CalledProcessError as e:
-        return False, f"git command failed: {e.stderr.strip() or e}"
+    The registry now lives at ~/.zeos/apps/REGISTRY.json (operator state,
+    outside the repo), so there is nothing in the repo tree to commit. The
+    --no-commit flag is still accepted for backward compatibility but no git
+    operation is ever performed. Returns (False, reason) so the caller prints
+    an informational line.
+    """
+    return False, "registry is operator-local (~/.zeos/apps/REGISTRY.json); not committed in v1.2.0+"
 
 
 def prompt_confirm(prompt: str) -> bool:
@@ -497,13 +599,13 @@ def main() -> None:
     info(f"  type            : {args.project_type}")
     info(f"  repo            : {args.repo or '(none)'}")
     info(f"  local_path      : {local_path}")
-    info(f"  registry        : {REGISTRY_PATH}")
+    info(f"  registry        : {REGISTRY_PATH}  (state-side)")
     info(f"  project CLAUDE  : {local_path / 'CLAUDE.md'}  (project repo)")
-    info(f"  SOUL.md         : {SOULS_ROOT / app_id / 'SOUL.md'}  (zeos-side, gitignored)")
-    info(f"  MEMORY.md       : {MEMORY_ROOT / app_id / 'MEMORY.md'}  (zeos-side, gitignored)")
-    info(f"  journals dir    : {JOURNALS_ROOT / app_id}/  (zeos-side, gitignored)")
-    info(f"  scaffold        : {'no' if args.no_scaffold else 'yes (all four)'}")
-    info(f"  git commit      : {'no' if args.no_commit else 'yes (local only, no push)'}")
+    info(f"  SOUL.md         : {SOULS_ROOT / app_id / 'SOUL.md'}  (state-side, ~/.zeos)")
+    info(f"  MEMORY.md       : {MEMORY_ROOT / app_id / 'MEMORY.md'}  (state-side, ~/.zeos)")
+    info(f"  journals dir    : {JOURNALS_ROOT / app_id}/  (state-side, ~/.zeos)")
+    info(f"  MASTER_ROADMAP  : {ROADMAPS_ROOT / app_id / 'MASTER_ROADMAP.md'}  (state-side, ~/.zeos)")
+    info(f"  scaffold        : {'no' if args.no_scaffold else 'yes (all five)'}")
     info("")
 
     if not args.yes and not prompt_confirm("Register and scaffold?"):
@@ -519,11 +621,11 @@ def main() -> None:
     if not args.no_scaffold:
         zeos_created = scaffold_zeos_side(app_id, name, args.project_type, local_path)
         if zeos_created:
-            info("✓ scaffolded (zeos-side):")
+            info("✓ scaffolded (state-side, ~/.zeos):")
             for path in zeos_created:
                 info(f"    {path}")
         else:
-            info("  (zeos-side scaffold already exists — left as-is)")
+            info("  (state-side scaffold already exists, left as-is)")
 
         claude_created = scaffold_project_claude_md(local_path, app_id, name, args.project_type)
         if claude_created:
@@ -533,12 +635,10 @@ def main() -> None:
         else:
             info(f"  (project CLAUDE.md already exists at {local_path / 'CLAUDE.md'} — left as-is)")
 
-    if not args.no_commit:
-        ok, detail = git_commit_registry(app_id)
-        if ok:
-            info(f"✓ committed locally: {detail}")
-        else:
-            info(f"  (skipped commit: {detail})")
+    # v1.2.0: the registry is operator-local (~/.zeos), never committed to the
+    # repo. The --no-commit flag is still accepted for backward compatibility.
+    _, detail = git_commit_registry(app_id)
+    info(f"  ({detail})")
 
     info("")
     info(f"Project {app_id!r} ready. Boot it with: /project {app_id}")

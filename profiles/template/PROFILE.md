@@ -100,8 +100,8 @@ Your active projects (use `/fleet` to see status):
 
 - Profile is loaded during `/zeos` boot (or implicitly by `/project`)
 - Use `/project <id>` to load a specific project after boot
-- Session journals live in `~/projects/zeos/journals/<app_id>/` (gitignored), not in the project repo
-- Project SOUL.md lives in `~/projects/zeos/souls/<app_id>/` (gitignored); project CLAUDE.md (operations doctrine) lives in the project repo
+- Session journals live in `~/.zeos/journals/<app_id>/` (gitignored), not in the project repo
+- Project SOUL.md lives in `~/.zeos/souls/<app_id>/` (gitignored); project CLAUDE.md (operations doctrine) lives in the project repo
 - Kernel documents (SOUL.md, BOOT_PROTOCOL.md) supersede this profile
 
 ---

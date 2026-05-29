@@ -1,0 +1,27 @@
+{
+  "registry_version": "1.0.0",
+  "schema_version": "1.0",
+  "last_updated": "2026-05-29T00:00:00Z",
+  "updated_by": "v1.2.0 starter template",
+  "description": "Starter template for the zeos project registry. On install this is copied to ~/.zeos/apps/REGISTRY.json (operator state, outside any repo). Do not edit your fleet here; edit ~/.zeos/apps/REGISTRY.json, or add projects via /newproject. This template ships empty.",
+  "architecture": {
+    "model": "federated_reference",
+    "upgrade_semantics": "live",
+    "policy": "Projects inherit kernel improvements instantly. Velocity over isolation."
+  },
+  "schema_docs": {
+    "app_id": "Stable identifier for the project (kebab-case)",
+    "name": "Human-readable project name",
+    "type": "internal | venture | research | infrastructure | utility",
+    "status": "active | paused | archived | proposed",
+    "repo": {
+      "url": "GitHub URL (or other git remote)",
+      "branch": "Default branch name"
+    },
+    "local_path": "Path relative to ~/projects/ where this repo lives locally",
+    "capabilities": "Array of strings describing what this project does",
+    "modules": "Array of zeos modules this project loads (e.g., 'team')",
+    "_resolved_paths": "As of v1.2.0 operator state lives under the state root (~/.zeos, env ZEOS_STATE_ROOT), resolved by the inject MCP server (path-resolver.ts). Registry at ~/.zeos/apps/REGISTRY.json; profiles at ~/.zeos/profiles/<name>/PROFILE.md; SOUL at ~/.zeos/souls/<app_id>/SOUL.md; MEMORY at ~/.zeos/memory/<app_id>/MEMORY.md; journals at ~/.zeos/journals/<app_id>/; roadmap at ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md. Project CLAUDE.md lives in the project repo at <local_path>/CLAUDE.md."
+  },
+  "apps": []
+}

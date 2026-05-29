@@ -51,9 +51,10 @@ This will:
 # 1. Clone zeos
 git clone https://github.com/rgsuarez/zeos.git ~/projects/zeos
 
-# 2. Create your profile
-cp -r ~/projects/zeos/profiles/template ~/projects/zeos/profiles/yourname
-# Edit ~/projects/zeos/profiles/yourname/PROFILE.md
+# 2. Create your profile (operator state lives under ~/.zeos)
+mkdir -p ~/.zeos/profiles
+cp -r ~/projects/zeos/profiles/template ~/.zeos/profiles/yourname
+# Edit ~/.zeos/profiles/yourname/PROFILE.md
 
 # 3. Build the MCP server
 cd ~/projects/zeos/infrastructure/inject
@@ -172,7 +173,7 @@ This:
 
 ## Customizing Your Profile
 
-Edit `~/projects/zeos/profiles/yourname/PROFILE.md`:
+Edit `~/.zeos/profiles/yourname/PROFILE.md`:
 
 ```yaml
 ---
@@ -206,61 +207,30 @@ continuity:
 
 ## Adding a Project
 
-Projects are registered in `apps/REGISTRY.json`. To add your own:
-
-1. Add entry to `apps/REGISTRY.json`:
-
-```json
-{
-  "app_id": "my-project",
-  "name": "My Project",
-  "type": "venture",
-  "status": "active",
-  "local_path": "~/projects/zeos-apps/my-project/",
-  "soul_file": "~/projects/zeos-apps/my-project/MY_PROJECT_SOUL.md",
-  "journal_location": "~/projects/zeos-apps/my-project/session-journals/"
-}
-```
-
-2. Create the app directory:
+Use `/newproject` (or `tools/newproject.py`). It registers the project in
+`~/.zeos/apps/REGISTRY.json` and scaffolds all five artifacts; you never
+hand-edit the registry.
 
 ```bash
-mkdir -p ~/projects/zeos-apps/my-project/session-journals
+python3 ~/projects/zeos/tools/newproject.py my-project \
+  --type=venture \
+  --repo=https://github.com/your-org/my-project
 ```
 
-3. Create a SOUL file (`MY_PROJECT_SOUL.md`):
+This writes:
 
-```markdown
----
-app_id: "my-project"
-name: "My Project"
-status: "active"
----
+- `~/.zeos/souls/my-project/SOUL.md` (identity)
+- `~/.zeos/memory/my-project/MEMORY.md` (curated memory)
+- `~/.zeos/journals/my-project/README.md` (journals dir)
+- `~/.zeos/roadmaps/my-project/MASTER_ROADMAP.md` (development direction)
+- `<local_path>/CLAUDE.md` (operations doctrine, in the project repo)
 
-# SOUL: My Project
+and appends the registry entry. Edit any scaffolded file afterward; re-running
+`/newproject` never overwrites an existing file. Then boot it:
 
-> **One-line purpose statement.**
-
-## Purpose
-
-What this project does.
-
-## Success Criteria
-
-How to measure success.
-
----
-
-## MANDATORY BOOT SEQUENCE
-
-1. Read this SOUL file
-2. Load latest session journal
-3. Check for active blueprint
-
----
+```bash
+/project my-project
 ```
-
-4. Now you can: `/project my-project`
 
 ---
 
@@ -303,18 +273,18 @@ Check `~/.claude/settings.json` has the correct path:
 
 ### Project not found
 
-Verify the project is in `apps/REGISTRY.json`.
+Verify the project is in `~/.zeos/apps/REGISTRY.json`.
 
 ### Journal not created
 
-Ensure the `session-journals/` directory exists in the app path.
+Ensure `~/.zeos/journals/<app_id>/` exists (it is scaffolded by `/newproject`).
 
 ---
 
 ## Next Steps
 
 1. **Customize your profile** — Edit PROFILE.md with your preferences
-2. **Add your projects** — Register in REGISTRY.json
+2. **Add your projects**: register with `/newproject` (writes `~/.zeos/apps/REGISTRY.json`)
 3. **Use checkpoints** — Save progress frequently with `/snap`
 4. **End sessions properly** — Use `/end` to update long-term memory
 
@@ -323,7 +293,7 @@ Ensure the `session-journals/` directory exists in the app path.
 ## Resources
 
 - **Architecture**: `docs/ARCHITECTURE.md`
-- **Registry Schema**: `apps/REGISTRY.json`
+- **Registry Schema**: `~/.zeos/apps/REGISTRY.json`
 - **Profile Template**: `profiles/template/PROFILE.md`
 - **Kernel Docs**: `kernel/SOUL.md`, `kernel/BOOT_PROTOCOL.md`
 

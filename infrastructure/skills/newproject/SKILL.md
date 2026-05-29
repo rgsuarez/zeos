@@ -1,38 +1,39 @@
 ---
 name: newproject
-description: Register a new project with zeos and scaffold four files — SOUL.md, MEMORY.md, journals/ in the zeos repo (gitignored), plus CLAUDE.md in the project repo. Local-first; never pushes to a remote registry.
+description: Register a new project with zeos and scaffold five files: SOUL.md, MEMORY.md, journals/, MASTER_ROADMAP.md under the state root (~/.zeos), plus CLAUDE.md in the project repo. Local-first; never pushes to a remote registry.
 argument-hint: <app_id> [--name=<name>] [--repo=<url>] [--type=<type>] [--local-path=<path>] [--no-scaffold] [--no-commit] [--yes]
 allowed-tools: Bash
 ---
 
 # /newproject
 
-Register a new project in the local zeos `apps/REGISTRY.json` and scaffold its four canonical files. Operates only on local files — no GitHub API calls, no auto-push. The registry change is committed to the local zeos repo only.
+Register a new project in `~/.zeos/apps/REGISTRY.json` and scaffold its five canonical files. Operates only on local files: no GitHub API calls, no auto-push. The registry is operator-local state (`~/.zeos`), never committed to a repo.
 
 ## What it does
 
 1. **Validates** `app_id` (kebab-case, not already in the registry).
-2. **Appends** a new entry to `~/projects/zeos/apps/REGISTRY.json` with the project's metadata.
-3. **Scaffolds four files** (skips any that already exist; never overwrites):
+2. **Appends** a new entry to `~/.zeos/apps/REGISTRY.json` with the project's metadata.
+3. **Scaffolds five files** (skips any that already exist; never overwrites):
 
    | File | Where | Purpose |
    |---|---|---|
-   | `SOUL.md` | `~/projects/zeos/souls/<app_id>/SOUL.md` | Project identity (WHO) — mission, constraints, values. Rarely changes. |
-   | `MEMORY.md` | `~/projects/zeos/memory/<app_id>/MEMORY.md` | Curated mid-term memory (cross-session). Token-budgeted, decay-tagged. |
-   | `journals/README.md` | `~/projects/zeos/journals/<app_id>/README.md` | Journal directory + naming convention. Journals append here from `/snap` and `/end`. |
-   | `CLAUDE.md` | `<local_path>/CLAUDE.md` | Operations doctrine (HOW) — build commands, conventions, key files. Lives in the project repo; team-visible if committed. |
+   | `SOUL.md` | `~/.zeos/souls/<app_id>/SOUL.md` | Project identity (WHO): mission, constraints, values. Rarely changes. |
+   | `MEMORY.md` | `~/.zeos/memory/<app_id>/MEMORY.md` | Curated mid-term memory (cross-session). Token-budgeted, decay-tagged. |
+   | `journals/README.md` | `~/.zeos/journals/<app_id>/README.md` | Journal directory + naming convention. Journals append here from `/snap` and `/end`. |
+   | `MASTER_ROADMAP.md` | `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md` | Development direction: desired end state, North Star, phases. Mostly static. |
+   | `CLAUDE.md` | `<local_path>/CLAUDE.md` | Operations doctrine (HOW): build commands, conventions, key files. Lives in the project repo; team-visible if committed. |
 
-4. **Commits** the registry change to the local zeos repo (no push). Skip with `--no-commit`.
+4. The registry is operator-local and never committed. `--no-commit` is accepted for backward compatibility but is a no-op.
 5. Reports the result. The project is now bootable with `/project <app_id>`.
 
-## Architecture: why four files
+## Architecture: why these files
 
 - `SOUL.md` answers **WHO** the project is. Identity-level, rarely changes (quarterly at most).
 - `CLAUDE.md` answers **HOW** the project operates. Build commands, conventions, file paths. Changes weekly.
 - `MEMORY.md` is curated cross-session memory the operator maintains.
 - Journals are append-only logs from `/snap` and `/end`.
 
-Three of the four (SOUL, MEMORY, journals) live in the **zeos repo** (gitignored) so they never leave the operator's machine. `CLAUDE.md` is the only file in the project repo — it's what teammates see if you commit it. The default `CLAUDE.md` template documents this layout so any agent (or human) entering the project understands where state lives.
+Four of the five (SOUL, MEMORY, journals, MASTER_ROADMAP) live under the state root `~/.zeos` (outside any repo, env `ZEOS_STATE_ROOT`), so they never leave the operator's machine and never contaminate the product repo. `CLAUDE.md` is the only file in the project repo; it's what teammates see if you commit it. The default `CLAUDE.md` template documents this layout so any agent (or human) entering the project understands where state lives.
 
 The operator is free to edit `CLAUDE.md` after scaffold — add references to project docs, customize sections, remove the zeos integration block if not needed. Zeos never overwrites it on subsequent runs.
 
@@ -65,17 +66,18 @@ If the user omitted `--yes`, the tool will print a summary and wait for `y/N`. S
 | `--type` | `internal` | One of: internal, venture, research, infrastructure, utility |
 | `--local-path` | `~/projects/<app_id>/` | Where the project lives locally |
 | `--no-scaffold` | off | Skip all scaffold writes (registry-only mode) |
-| `--no-commit` | off | Edit REGISTRY.json but don't commit to the local zeos repo |
+| `--no-commit` | off | Accepted for backward compatibility; no-op (the registry is operator-local and never committed) |
 | `--yes` / `-y` | off | Skip the confirmation prompt |
 
 ## Where state lives after `/newproject`
 
-| Artifact | Path | In repo |
+| Artifact | Path | Location |
 |---|---|---|
-| Registry entry | `~/projects/zeos/apps/REGISTRY.json` | zeos (committed locally) |
-| `SOUL.md` | `~/projects/zeos/souls/<app_id>/SOUL.md` | zeos (gitignored) |
-| Journals | `~/projects/zeos/journals/<app_id>/` | zeos (gitignored) |
-| `MEMORY.md` | `~/projects/zeos/memory/<app_id>/MEMORY.md` | zeos (gitignored) |
+| Registry entry | `~/.zeos/apps/REGISTRY.json` | state root (operator-local, not committed) |
+| `SOUL.md` | `~/.zeos/souls/<app_id>/SOUL.md` | state root |
+| `MEMORY.md` | `~/.zeos/memory/<app_id>/MEMORY.md` | state root |
+| Journals | `~/.zeos/journals/<app_id>/` | state root |
+| `MASTER_ROADMAP.md` | `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md` | state root |
 | `CLAUDE.md` | `<local_path>/CLAUDE.md` | Project repo (untracked by default; operator decides whether to commit) |
 
 ## What it does NOT do
@@ -83,15 +85,10 @@ If the user omitted `--yes`, the tool will print a summary and wait for `y/N`. S
 - Does not push to any remote (`git push` is your call, separately).
 - Does not create a GitHub repo for the project.
 - Does not `git clone` the project repo.
+- Does not commit anything: the registry is operator-local state under `~/.zeos`, never committed to a repo.
 - Does not overwrite any existing file. Re-running `/newproject` on the same `app_id` errors out cleanly.
-- Does not auto-commit the project-side `CLAUDE.md` — that's your decision. If you don't want it tracked yet, add it to `.git/info/exclude` per-machine.
-
-## When to skip the commit
-
-- `--no-commit` if your zeos working tree is dirty and you want to stage the registry update with other changes.
-- Default (commit) is correct when zeos is on `main` with a clean tree — keeps history of project onboarding.
 
 ## Source
 
 - Tool: `~/projects/zeos/tools/newproject.py`
-- Registry: `~/projects/zeos/apps/REGISTRY.json`
+- Registry: `~/.zeos/apps/REGISTRY.json`

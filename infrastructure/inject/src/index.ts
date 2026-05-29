@@ -21,11 +21,15 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import {
+  ZEOS_REPO_ROOT,
+  ZEOS_STATE_ROOT,
   ZEOS_APPS_ROOT,
+  stateFirst,
   expandPath as resolverExpandPath,
   resolveJournalPath as resolverResolveJournalPath,
   resolveMemoryPath as resolverResolveMemoryPath,
   resolveSoulPath as resolverResolveSoulPath,
+  resolveRoadmapPath as resolverResolveRoadmapPath,
   resolveProjectClaudeMdPath as resolverResolveProjectClaudeMdPath,
   resolveProjectRoot as resolverResolveProjectRoot,
   verifyJournalWritten,
@@ -87,8 +91,14 @@ import { promoteMemoryEntryToSoul } from "./lib/soul-promote.js";
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════════
 
-const ZEOS_ROOT = "~/projects/zeos";
-const REGISTRY_PATH = `${ZEOS_ROOT}/apps/REGISTRY.json`;
+// Product paths (kernel, modules, profiles/template) resolve under the repo
+// root; operator state (registry, profiles, souls, memory, journals, roadmaps)
+// resolves under the state root (~/.zeos as of v1.2.0). The registry read is
+// state-first with a one-release legacy fallback to the old in-repo location.
+const REGISTRY_PATH = stateFirst(
+  `${ZEOS_STATE_ROOT}/apps/REGISTRY.json`,
+  `${ZEOS_REPO_ROOT}/apps/REGISTRY.json`,
+);
 const DEFAULT_PROFILE = "operator";
 // JOURNAL_SCHEMA_VERSION, MEMORY_ENTRY_DECAY_DEFAULT, MEMORY_ENTRY_IMPORTANCE_DEFAULT,
 // MEMORY_PROMOTION_IMPORTANCE_THRESHOLD are imported from src/lib/journal.ts and src/lib/memory.ts.
@@ -121,6 +131,17 @@ function readFile(filePath: string): string {
 
 function fileExists(filePath: string): boolean {
   return fs.existsSync(expandPath(filePath));
+}
+
+// Resolve an operator profile: state-side first (~/.zeos/profiles/<name>/),
+// then the legacy in-repo profile (one-release fallback), then the in-repo
+// template as the final default. Product template stays in the repo.
+function resolveProfilePath(name: string): string {
+  const stateP = `${ZEOS_STATE_ROOT}/profiles/${name}/PROFILE.md`;
+  const repoP = `${ZEOS_REPO_ROOT}/profiles/${name}/PROFILE.md`;
+  if (fileExists(stateP)) return stateP;
+  if (fileExists(repoP)) return repoP;
+  return `${ZEOS_REPO_ROOT}/profiles/template/PROFILE.md`;
 }
 
 function readJson(filePath: string): any {
@@ -185,7 +206,7 @@ function releaseMemoryLock(memoryPath: string): void {
 // Wrapper preserving the original profile-name signature; reads the profile
 // file via the existing helper, then delegates parsing to the pure lib helper.
 function getMemoryTokenLimit(profileName: string = DEFAULT_PROFILE): number {
-  const profilePath = `${ZEOS_ROOT}/profiles/${profileName}/PROFILE.md`;
+  const profilePath = resolveProfilePath(profileName);
   return _getMemoryTokenLimitFromContent(readFile(profilePath));
 }
 
@@ -433,7 +454,7 @@ function getGitSnapshot(app: AppEntry): string {
 // ═══════════════════════════════════════════════════════════════
 
 function compileBootPayload(profile: string = DEFAULT_PROFILE): string {
-  const profilePath = `${ZEOS_ROOT}/profiles/${profile}/PROFILE.md`;
+  const profilePath = resolveProfilePath(profile);
 
   // Load profile and check boot mode
   let profileContent = readFile(profilePath);
@@ -455,14 +476,16 @@ function compileBootPayload(profile: string = DEFAULT_PROFILE): string {
 
   if (isFullMode) {
     // FULL BOOT - explicit only
-    soul = readFile(`${ZEOS_ROOT}/kernel/SOUL.md`);
-    bootProtocol = readFile(`${ZEOS_ROOT}/kernel/BOOT_PROTOCOL.md`);
-    shellProtocol = readFile(`${ZEOS_ROOT}/modules/constraints/SHELL_PROTOCOL.md`);
+    soul = readFile(`${ZEOS_REPO_ROOT}/kernel/SOUL.md`);
+    bootProtocol = readFile(`${ZEOS_REPO_ROOT}/kernel/BOOT_PROTOCOL.md`);
+    // The canonical full-boot shell protocol is the numbered module file;
+    // the old unnumbered SHELL_PROTOCOL.md path never existed on disk.
+    shellProtocol = readFile(`${ZEOS_REPO_ROOT}/modules/constraints/ZEOS_MODULE_002_SHELL_PROTOCOL.md`);
   } else {
     // LEAN BOOT - default
-    soul = readFile(`${ZEOS_ROOT}/kernel/lean/SOUL_CORE.md`);
-    bootProtocol = readFile(`${ZEOS_ROOT}/kernel/lean/BOOT_PROTOCOL_LEAN.md`);
-    shellProtocol = readFile(`${ZEOS_ROOT}/kernel/lean/SHELL_PROTOCOL_LEAN.md`);
+    soul = readFile(`${ZEOS_REPO_ROOT}/kernel/lean/SOUL_CORE.md`);
+    bootProtocol = readFile(`${ZEOS_REPO_ROOT}/kernel/lean/BOOT_PROTOCOL_LEAN.md`);
+    shellProtocol = readFile(`${ZEOS_REPO_ROOT}/kernel/lean/SHELL_PROTOCOL_LEAN.md`);
   }
 
   const payload = `
@@ -553,15 +576,24 @@ Coordinate to avoid conflicts.
   // Otherwise the newly created empty stub becomes the "latest" journal.
 
   // Load project files:
-  // - SOUL.md (zeos-side) — identity, mission, constraints (WHO)
+  // - SOUL.md (state-side): identity, mission, constraints (WHO)
+  // - MASTER_ROADMAP.md (state-side, optional): development direction
   // - Project CLAUDE.md (project repo, optional) — operations doctrine (HOW)
   const soul = readFile(soulPath);
+  // v1.2.0: master roadmap lives at ~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md.
+  // Surface it at boot between SOUL and memory. Silent-skip when absent (not
+  // every project has one yet). Read once; reused for active-blueprint detection.
+  const masterRoadmapPath = resolverResolveRoadmapPath(app);
+  const masterRoadmap = fileExists(masterRoadmapPath) ? readFile(masterRoadmapPath) : "";
+  const masterRoadmapSection = masterRoadmap
+    ? `\n# Master Roadmap (MASTER_ROADMAP.md)\n\n${masterRoadmap}\n\n---\n`
+    : "";
   const expandedClaudeMd = expandPath(claudeMdPath);
   const projectClaudeMd = fs.existsSync(expandedClaudeMd)
     ? fs.readFileSync(expandedClaudeMd, "utf-8")
     : "";
 
-  // Load three-tier memory. MEMORY.md lives at ~/projects/zeos/memory/<app_id>/MEMORY.md.
+  // Load three-tier memory. MEMORY.md lives at ~/.zeos/memory/<app_id>/MEMORY.md.
   const memoryPath = resolveMemoryPath(app);
   const memory = loadMemory(journalDir, memoryPath);
 
@@ -627,12 +659,12 @@ ${memory.tier2_sessions.join('\n\n')}
     ? `# Latest Session Journal\n\n${latestJournal}`
     : "[No prior session journals]";
 
-  // Check for active blueprint in MASTER_ROADMAP
+  // Check for an active blueprint declared in the (state-side) master roadmap.
+  // The roadmap content was already read above; reuse it. Blueprint files
+  // remain under the legacy ZEOS_APPS_ROOT location (out of scope for v1.2.0).
   let blueprintSection = "";
-  const roadmapPath = `${ZEOS_APPS_ROOT}/${app.local_path}docs/MASTER_ROADMAP.md`;
-  if (fileExists(roadmapPath)) {
-    const roadmap = readFile(roadmapPath);
-    const bpMatch = roadmap.match(/active_blueprint:\s*"?([^"\n]+)"?/);
+  if (masterRoadmap) {
+    const bpMatch = masterRoadmap.match(/active_blueprint:\s*"?([^"\n]+)"?/);
     if (bpMatch && bpMatch[1] !== "null") {
       const bpPath = `${ZEOS_APPS_ROOT}/${app.local_path}blueprints/${bpMatch[1]}`;
       if (fileExists(bpPath)) {
@@ -676,7 +708,7 @@ ${projectClaudeMd ? `
 
 ${projectClaudeMd}
 ` : ""}
-${gitStatus}
+${masterRoadmapSection}${gitStatus}
 ---
 ${memorySection}
 ${journalSection}
@@ -1363,7 +1395,7 @@ ${formatRedactionNotice(redactions)}
 
         // Update MEMORY.md with session summary and auto-curate.
         // Lockfile prevents lost updates when parallel agents /end simultaneously.
-        // MEMORY.md lives at ~/projects/zeos/memory/<app_id>/MEMORY.md.
+        // MEMORY.md lives at ~/.zeos/memory/<app_id>/MEMORY.md.
         const memoryPath = expandPath(resolveMemoryPath(app));
         const archivePath = path.join(path.dirname(memoryPath), "MEMORY_ARCHIVE.md");
         // Ensure the memory directory exists before writing

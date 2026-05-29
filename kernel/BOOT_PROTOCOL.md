@@ -101,8 +101,8 @@ zeos/
     │
     └── {operator_id}/              # Custom Profiles
         ├── PROFILE.md
-        # NOTE: Session journals now route to project repos
-        # e.g., {app-repo}/session-journals/
+        # NOTE: As of v1.2.0 operator profiles and session journals live under
+        # the state root, e.g. ~/.zeos/profiles/<id>/ and ~/.zeos/journals/<app_id>/
 ```
 
 ### Profile Contents
@@ -211,7 +211,7 @@ Operators who want automatic profile loading configure this in their AI platform
 8. JOURNAL LOADING (Project mode):
    - After `/zeos` boot, operator is in "Project mode" (no active project)
    - Journals load when operator runs `/project <id>`
-   - Journal location: `{app-repo}/session-journals/` (per project SOUL)
+   - Journal location: `~/.zeos/journals/<app_id>/` (state root, v1.2.0+)
    - Profile contains identity only, not session history
 
 9. JOURNAL STUB CREATION (Immediate Visibility):
@@ -320,7 +320,7 @@ To begin work, operator runs `/project <id>` which:
 When `/project <id>` activates a project:
 
 1. **Check for Existing Active Session**
-   - Scan `session-journals/` for files with `status: active` or `status: paused`
+   - Scan `~/.zeos/journals/<app_id>/` for files with `status: active` or `status: paused`
    - If found: Present option to resume or start new session
    - If none found: Proceed to new session creation
 
@@ -369,7 +369,7 @@ When `/project <id>` activates a project, detect other active instances:
     d. Store in session context (memory only)
 
 13. PARALLEL INSTANCE DETECTION:
-    a. GLOB session-journals/{today}-*.md
+    a. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
     b. PARSE each journal frontmatter for:
        - status: in_progress (indicates active session)
        - agent: instance identifier
@@ -400,7 +400,7 @@ PARALLEL INSTANCES DETECTED
   ● codex (2026-01-08-006) — started 13:15, active
 
 Your instance: claude-opus (2026-01-08-008)
-Journal: session-journals/2026-01-08-008-claude-opus.md
+Journal: ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
 ═══════════════════════════════════════════════════════════════
 ```
 

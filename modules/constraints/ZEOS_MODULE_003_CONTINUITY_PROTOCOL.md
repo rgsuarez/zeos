@@ -83,7 +83,7 @@ The stub makes the instance visible to parallel detection **before** any work or
 
 ```
 1. GENERATE instance ID: {agent}-{hash4}
-2. GLOB session-journals/{today}-*.md
+2. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
 3. DETERMINE next sequence number
 4. CREATE stub file immediately
 5. COMMIT stub (single-file commit)
@@ -140,11 +140,11 @@ Journal files include agent identifier to prevent collision:
 
 ```
 Before (collision-prone):
-  session-journals/2026-01-08-007.md
+  ~/.zeos/journals/<app_id>/2026-01-08-007.md
 
 After (instance-scoped):
-  session-journals/2026-01-08-007-claude-opus.md
-  session-journals/2026-01-08-007-gemini-cli.md
+  ~/.zeos/journals/<app_id>/2026-01-08-007-claude-opus.md
+  ~/.zeos/journals/<app_id>/2026-01-08-007-gemini-cli.md
 ```
 
 **Naming Convention:**
@@ -161,7 +161,7 @@ Components:
 
 ```
 ON JOURNAL CREATION:
-  1. GLOB session-journals/{today}-*.md
+  1. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
   2. PARSE filenames, extract sequence numbers
   3. FIND highest sequence for today
   4. INCREMENT by 1 for this instance
@@ -187,9 +187,9 @@ Certain files require single-writer semantics. Concurrent modification causes se
 
 | File Pattern | Reason | Location |
 |--------------|--------|----------|
-| `MASTER_ROADMAP.md` | Version field, active_blueprint | Project docs/ |
+| `MASTER_ROADMAP.md` | Version field, active_blueprint | `~/.zeos/roadmaps/<app_id>/` |
 | Active blueprint (from frontmatter) | Task status updates | Project blueprints/ |
-| `apps/REGISTRY.json` | App registry mutations | zeos repo |
+| `~/.zeos/apps/REGISTRY.json` | App registry mutations | state root (`~/.zeos`) |
 | `CHANGELOG.md` | Version entries | Project root |
 
 **Timestamp Check Protocol:**
@@ -581,7 +581,7 @@ continuity:
 ### Per-App Override (Optional)
 
 ```yaml
-# ~/projects/zeos-apps/{app_id}/APP_SOUL.md or APP_MANIFEST.json
+# ~/.zeos/souls/{app_id}/APP_SOUL.md or APP_MANIFEST.json
 continuity:
   mode: LIGHT    # Can only be MORE restrictive than profile
 ```

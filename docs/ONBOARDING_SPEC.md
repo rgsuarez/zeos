@@ -181,10 +181,12 @@ Let's set up your project.
 I can create a GitHub repo with standard structure:
 
   {project-name}/
+  ├── CLAUDE.md                (operations doctrine)
   ├── docs/
   │   └── STRATEGIC_VISION.md  (your goal + success criteria)
-  ├── session-journals/        (where I'll save our progress)
   └── README.md
+
+  (session journals live at ~/.zeos/journals/<app_id>/, not in the project)
 
 Create this structure? (yes / no / I'll do it myself)
 ```

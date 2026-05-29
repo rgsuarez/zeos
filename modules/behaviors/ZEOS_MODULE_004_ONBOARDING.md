@@ -180,10 +180,11 @@ Let's set up your project.
 I can create a standard structure:
 
   {project-name}/
+  ├── CLAUDE.md                (operations doctrine)
   ├── docs/
   │   └── STRATEGIC_VISION.md  (your goal + success criteria)
-  ├── session-journals/        (where I save progress)
   └── README.md
+  (session journals live at ~/.zeos/journals/<app_id>/, not in the project)
 
 Create this structure? (yes / no / I'll do it myself)
 ```
@@ -217,8 +218,8 @@ Checkpoint rule: "After any meaningful decision"
 **Execution:**
 1. Create directory structure
 2. Generate STRATEGIC_VISION.md from user inputs
-3. Initialize session-journals/
-4. If `--repo` specified, create GitHub repository
+3. Initialize `~/.zeos/journals/<app_id>/`
+4. If `--repo` specified, record the repo URL in the registry (no repo is created)
 5. Output Project Card
 
 **Example:**

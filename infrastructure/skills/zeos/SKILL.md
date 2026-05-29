@@ -23,7 +23,7 @@ This returns the compiled boot payload in one call instead of reading multiple f
 
 If the MCP server is unavailable, read these files manually in order:
 
-1. **Load profile.** Read `~/projects/zeos/profiles/${ARGUMENTS:-<your-profile>}/PROFILE.md`. Extract `boot_mode` from frontmatter (default: `lean`).
+1. **Load profile.** Read `~/.zeos/profiles/${ARGUMENTS:-<your-profile>}/PROFILE.md` (falls back to `~/projects/zeos/profiles/template/PROFILE.md` if absent). Extract `boot_mode` from frontmatter (default: `lean`).
 2. **Load kernel** (lean by default):
    - Lean: `~/projects/zeos/kernel/lean/SOUL_CORE.md`, `~/projects/zeos/kernel/lean/BOOT_PROTOCOL_LEAN.md`
    - Full (only if `boot_mode: full`): `~/projects/zeos/kernel/SOUL.md`, `~/projects/zeos/kernel/BOOT_PROTOCOL.md`
@@ -46,5 +46,5 @@ After boot, zeos governance is active. Available commands:
 
 ## Arguments
 
-- `$ARGUMENTS` — optional profile name. Default is the first non-template directory under `~/projects/zeos/profiles/`.
+- `$ARGUMENTS`: optional profile name. Default is the first directory under `~/.zeos/profiles/`.
 - Example: `/zeos my-profile` loads the `my-profile` profile.

@@ -67,7 +67,7 @@ PROFILE (Layer 2) — Operator Context
 
 **Step 4.5:** Parallel Instance Detection
 - Generate instance ID: {agent}-{hash4}
-- Scan session-journals for parallel instances
+- Scan ~/.zeos/journals/<app_id>/ for parallel instances
 
 **Step 4.6:** Repo Boundary Detection (git root, enforcement level)
 

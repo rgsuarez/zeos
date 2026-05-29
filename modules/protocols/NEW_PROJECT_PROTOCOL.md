@@ -43,63 +43,54 @@ This protocol is triggered by:
 
 ## Session Journal Routing (CRITICAL)
 
-**App session journals ALWAYS write to the APP REPO, not zeos Core.**
+**All session journals write to the state root, never into a project repo.**
 
-This is a fundamental architectural rule. When operating in an app context, the agent must route all persistence to the app's repository.
+As of v1.2.0 operator state lives under `~/.zeos` (env `ZEOS_STATE_ROOT`),
+outside any repo. Journals for every project (including zeos itself) are keyed
+by `app_id`.
 
 | Session Type | Journal Location | Example |
 |--------------|------------------|---------|
-| Core zeos (`/zeos`) | `zeos/profiles/{profile}/session-journals/{agent}/` | `zeos/profiles/operator/session-journals/claude/2025-12-30-001.md` |
-| App session | `{app-repo}/session-journals/` | `zeos-agent/session-journals/2025-12-30-001.md` |
+| Any project (`/project <id>`) | `~/.zeos/journals/<app_id>/` | `~/.zeos/journals/zeos-dev/2026-05-29-001-claude.md` |
 
 ### How the Agent Knows Where to Write
 
-1. **On app boot**: Read the app's SOUL file
-2. **Extract `session_journals` field**: This is the authoritative destination
-3. **All `/snap` and `/end` writes**: Go to that location
-4. **NEVER**: Write app session journals to zeos Core profile
+1. **On project boot**: the inject MCP server resolves the journal directory
+   from `app_id` via `path-resolver.ts` (`resolveJournalPath`).
+2. **All `/snap` and `/end` writes**: go to `~/.zeos/journals/<app_id>/`.
+3. **NEVER**: write session journals into a project repo or into the zeos repo.
 
-### SOUL File Must Include
-
-Every app SOUL file MUST contain:
-
-```yaml
-session_journals: "{app-repo}/session-journals/"
-```
-
-And the prose section MUST include:
-
-```markdown
-## Session Management
-
-**Journal Location:** `{repository}/session-journals/`
-
-All session journals for this application are stored in the app repository, NOT in zeos Core.
-When you execute `/snap` or `/end` during a {app_name} session, write to:
-`{repository}/session-journals/YYYY-MM-DD-NNN.md`
-```
+The SOUL file does NOT carry a journal-routing field; the path is computed from
+`app_id`. Pre-v1.2.0 journal-routing fields in the SOUL are ignored.
 
 ### Violation Prevention
 
-If an agent writes an app session journal to zeos Core:
-1. This is a **PROTOCOL VIOLATION**
-2. The misplaced journal must be moved to the correct app repo
-3. Root cause: SOUL file missing `session_journals` field
+If an agent writes a session journal into a project repo or the zeos repo:
+1. This is a **PROTOCOL VIOLATION**.
+2. The misplaced journal must be moved to `~/.zeos/journals/<app_id>/`.
+3. Root cause: agent bypassed the resolver and hardcoded a path.
 
 ---
 
 ## Execution Flow
 
+> **Authoritative implementation (v1.2.0+):** `tools/newproject.py` (the
+> `/newproject` skill). It is local-first: it registers the project and
+> scaffolds state-side artifacts plus the project `CLAUDE.md`. It does NOT
+> create or clone GitHub repositories; `--repo` is informational metadata only.
+> The repo-creation steps below describe an earlier aspirational flow and are
+> retained for reference; the registry's `repo.url` is operator-provided.
+
 ### Step 1: Validate
 
 ```
-1. Check app_id is unique (not in apps/REGISTRY.json)
+1. Check app_id is unique (not in ~/.zeos/apps/REGISTRY.json)
 2. Check app_id format (lowercase, hyphens, no spaces, no underscores)
 3. If --repo provided:
    a. Verify repo exists and is accessible
    b. Use existing repo
 4. If --repo NOT provided:
-   a. Check if repo "rgsuarez/{app_id}" already exists
+   a. Check if repo "<org>/{app_id}" already exists
    b. If exists: use it (with warning)
    c. If not exists: CREATE NEW REPO (Step 1b)
 ```
@@ -140,7 +131,7 @@ curl -X POST \
 **Confirmation Prompt:**
 ```
 Creating new venture: {app_id}
-Repository: github.com/rgsuarez/{app_id} (will create, PRIVATE)
+Repository: github.com/<org>/{app_id} (will create, PRIVATE)
 
 Proceed? [Y/n]
 ```
@@ -148,239 +139,58 @@ Proceed? [Y/n]
 Or with `--public`:
 ```
 Creating new venture: {app_id}
-Repository: github.com/rgsuarez/{app_id} (will create, PUBLIC)
+Repository: github.com/<org>/{app_id} (will create, PUBLIC)
 
 ⚠️  Public repos are visible to everyone. Confirm? [Y/n]
 ```
 
-### Step 2: Create zeos-Side Structure
-
-In the `zeos` repo, create:
-
-```
-~/projects/zeos-apps/{app_id}/
-└── {APP_ID}_SOUL.md       ← App identity (from template below)
-```
-
-**SOUL Template:**
-
-```markdown
----
-module_id: "{app_id}-app"
-module_type: "application"
-version: "1.0.0"
-created: "{date}"
-author: "Claude (system)"
-status: "active"
-classification: "APPLICATION"
-location: "zeos-apps/{app_id}/{APP_ID}_SOUL.md"
-parent: "kernel/SOUL.md"
-applies_to: "{App Name}"
-repository: "rgsuarez/{app_id}"
-session_journals: "rgsuarez/{app_id}/session-journals/"
-dependencies: ["shell-protocol"]
----
-
-# Application Soul: {App Name}
-
-## Mandatory Boot Sequence
-
-After loading this SOUL file:
-
-| Order | File | Purpose |
-|-------|------|---------|
-| 1 | `CLAUDE.md` | Operations, infrastructure, build/test commands |
-| 2 | `session-journals/` (latest) | Session continuity |
-| 3 | `docs/MASTER_ROADMAP.md` | Development direction |
-
-## 1. Identity
-
-{App Name} is [TODO: one-sentence mission].
-
-[TODO: Core thesis — what problem this solves and why it matters]
-
-## 2. Critical Knowledge
-
-> Information that is NUCLEAR ESSENTIAL and cannot be derived from code, git history, or CLAUDE.md.
-
-[TODO: Physical addresses, active customers, credential references, human contacts, legal entities]
-
-## 3. Founding Principles
-
-[TODO: The principles that govern ALL decisions for this application]
-
-1. [Principle 1]
-2. [Principle 2]
-
-## 4. Constraints
-
-[TODO: What the AI CANNOT do — permission boundaries, safety limits, operational guardrails]
-
-1. Session writes go to `rgsuarez/{app_id}/session-journals/` — NEVER to zeos Core
-2. GitOps discipline: GitHub is single source of truth
-3. No secrets in chat, journals, or commits
-
-## 5. zeos Integration
-
-- **Operator:** `profiles/{profile}/`
-- **Persistence:** Federated to `rgsuarez/{app_id}`
-- **Kernel:** Live from `zeos/kernel/`
-- **Journals:** `rgsuarez/{app_id}/session-journals/YYYY-MM-DD-NNN.md`
-
-## Scope Guidance
-
-> **SOUL.md is identity and constraints. CLAUDE.md is operations and infrastructure.**
-> If it changes more than once a quarter, it belongs in CLAUDE.md.
-> If it defines WHO the agent is rather than HOW it operates, it belongs in SOUL.md.
-
-**OUT-OF-SCOPE for SOUL.md** (put these in CLAUDE.md instead):
-- Infrastructure architecture (AWS accounts, CDK stacks, Lambda mappings)
-- API pipeline diagrams and data flow charts
-- Third-party service configurations (OAuth, analytics, email, SMS)
-- Deployment procedures and build/test commands
-- Known gotchas and technical workarounds
-- Detailed roadmap status (the backlog is the live source of truth)
-- Process documentation not actively used
-- Lessons learned from specific sessions (these become MEMORY.md entries)
-
----
-
-*{App Name} Application Soul v1.0.0*
-*Part of zeos Application Layer*
-*Parent: kernel/SOUL.md*
-```
-
-### Step 3: Create App-Repo Structure
-
-In the app's GitHub repo, create (if not present):
-
-```
-{app-repo}/
-├── docs/
-│   ├── MASTER_ROADMAP.md      ← From template
-│   └── SYSTEM_ARCHITECTURE.md ← From template  
-├── session-journals/
-│   └── README.md              ← Explains journal format
-└── .zeos/
-    └── APP_MANIFEST.json      ← Links back to zeos registry
-```
-
-**MASTER_ROADMAP.md Template:**
-
-```markdown
-# {App Name} — Master Roadmap
-
-> **Document Status**: Living Document  
-> **Last Updated**: {date}
-> **Owner**: {Operator Name}
-
----
-
-## Strategic Vision
-
-[TODO: Define the vision for this venture]
-
----
-
-## Tier 1: Foundation
-
-**Goal**: [Define foundation goals]
-
-| Item | Status | Notes |
-|------|--------|-------|
-| [Task 1] | 🔲 | |
-| [Task 2] | 🔲 | |
-
----
-
-## Success Metrics
-
-### Tier 1 Complete When:
-- [ ] [Metric 1]
-- [ ] [Metric 2]
-
----
-
-*"Systems over tasks. Build for the long term."*
-```
-
-**SYSTEM_ARCHITECTURE.md Template:**
-
-```markdown
-# {App Name} — System Architecture
-
-> **Document Status**: Living Document  
-> **Last Updated**: {date}
-> **Owner**: Technical Operations
-
----
-
-## Overview
-
-[TODO: Describe the system architecture]
-
----
-
-## Infrastructure
-
-| Resource | Value |
-|----------|-------|
-| Repository | {repo_url} |
-| AWS Account | {aws_account or 'N/A'} |
-
----
-
-## Component Details
-
-[TODO: Document components as they are built]
-
----
-
-*Last verified: {date}*
-```
-
-**APP_MANIFEST.json Template:**
-
-```json
-{
-  "app_id": "{app_id}",
-  "zeos_registry": "https://github.com/rgsuarez/zeos/blob/main/apps/REGISTRY.json",
-  "soul_location": "zeos-apps:{app_id}/{APP_ID}_SOUL.md",
-  "session_journals": "{app-repo}/session-journals/",
-  "kernel_version": "live",
-  "created": "{date}",
-  "visibility": "{private|public}",
-  "note": "This app boots with live zeos kernel. No version pinning."
-}
-```
-
-**session-journals/README.md Template:**
-
-```markdown
-# Session Journals
-
-This directory contains session journals for {App Name}.
-
-**IMPORTANT:** All session journals for this app are stored HERE, not in zeos Core.
-
-## Format
-
-Journals follow the zeos session journaling standard:
-- Filename: `YYYY-MM-DD-NNN.md` (e.g., `2025-12-30-001.md`)
-- Status: CHECKPOINT or COMPLETE
-- Required fields: session_id, date, status, agent, next_action_primer
-
-## Usage
-
-- `/snap` — Save progress mid-session (writes HERE)
-- `/end` — Generate final journal and commit (writes HERE)
-
-See zeos Shell Protocol for full documentation.
-```
+### Step 2: Scaffold the SOUL (state-side)
+
+The project SOUL lives at `~/.zeos/souls/{app_id}/SOUL.md` (state root, outside
+any repo). The canonical SOUL template is defined in `tools/newproject.py` as
+`SOUL_MD_TEMPLATE`; that is the single source of truth. Do not hand-author a
+SOUL or duplicate the template here.
+
+The SOUL carries identity only (mission, constraints, identity, values) and a
+`location:` of `~/.zeos/souls/{app_id}/SOUL.md`. It does NOT carry a
+journal-routing field; journals are resolved from `app_id` to
+`~/.zeos/journals/<app_id>/` (see Session Journal Routing above).
+
+**Scope guidance.** SOUL.md is identity and constraints; `CLAUDE.md` is
+operations and infrastructure. If it changes more than once a quarter, or
+describes HOW rather than WHO, it belongs in `CLAUDE.md`. Out of scope for
+SOUL.md: infrastructure architecture, build/test commands, third-party configs,
+deployment procedures, live roadmap status, and per-session lessons (those
+become MEMORY.md entries).
+
+### Step 3: Scaffold the project artifacts
+
+As of v1.2.0 the canonical implementation is `tools/newproject.py` (the
+`/newproject` skill). It scaffolds five artifacts and never overwrites an
+existing file. Do not hand-create these:
+
+| Artifact | Location | Notes |
+|----------|----------|-------|
+| `SOUL.md` | `~/.zeos/souls/<app_id>/SOUL.md` | Project identity (state) |
+| `MEMORY.md` | `~/.zeos/memory/<app_id>/MEMORY.md` | Curated memory (state) |
+| `journals/README.md` | `~/.zeos/journals/<app_id>/README.md` | Journals dir (state) |
+| `MASTER_ROADMAP.md` | `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md` | Development direction (state) |
+| `CLAUDE.md` | `<local_path>/CLAUDE.md` | Operations doctrine (project repo) |
+
+The `MASTER_ROADMAP.md` template (desired end state, North Star, intent,
+phases, current milestone, out-of-scope, decision log, change discipline) is
+defined in `tools/newproject.py` as `MASTER_ROADMAP_TEMPLATE`. That is the
+single source of truth for the template; do not duplicate it here.
+
+**Deferred to vNext (not scaffolded by `/newproject`):** project-repo
+`docs/SYSTEM_ARCHITECTURE.md`, a project-repo journals README, and
+project-repo `.zeos/APP_MANIFEST.json`. These were specified by earlier drafts
+of this protocol but are not part of the v1.2.0 implementation. They are parked
+for a later protocol cleanup; the roadmap above is the artifact v1.2.0 adds.
 
 ### Step 4: Update Registry
 
-Add entry to `apps/REGISTRY.json`:
+Add entry to `~/.zeos/apps/REGISTRY.json`:
 
 ```json
 {
@@ -390,23 +200,17 @@ Add entry to `apps/REGISTRY.json`:
   "status": "active",
   "repo": {
     "url": "{repo_url}",
-    "branch": "main",
-    "visibility": "{private|public}",
-    "created_by_zeos": true
+    "branch": "main"
   },
-  "local_path": "~/projects/zeos-apps/{app_id}/",
-  "soul_file": "~/projects/zeos-apps/{app_id}/{APP_ID}_SOUL.md",
-  "session_journals": "{repo}/session-journals/",
-  "journal_prefix": null,
-  "aws_account": "{aws_account_or_null}",
-  "aws_region": "us-east-1",
-  "capabilities": [
-    "github-persistence",
-    "session-journaling"
-  ],
-  "infrastructure": null
+  "local_path": "{app_id}/",
+  "capabilities": [],
+  "modules": []
 }
 ```
+
+SOUL, MEMORY, journals, and the roadmap are NOT registry fields; they are
+resolved from `app_id` under `~/.zeos/`. `local_path` is where the project repo
+is checked out (relative to `~/projects/`), where `CLAUDE.md` lives.
 
 ### Step 5: Confirm
 
@@ -417,19 +221,19 @@ Output scaffolding summary:
  ✅ APP SCAFFOLDED: {app_id}
 ═══════════════════════════════════════════════════════════════════════════════
  
- Repository:     github.com/rgsuarez/{app_id} (CREATED, private)
+ Registry:       Updated (~/.zeos/apps/REGISTRY.json)
  
- zeos Registry:  Updated (apps/REGISTRY.json)
- SOUL File:      ~/projects/zeos-apps/{app_id}/{APP_ID}_SOUL.md (created)
+ State (~/.zeos):
+   └── souls/{app_id}/SOUL.md (created)
+   └── memory/{app_id}/MEMORY.md (created)
+   └── journals/{app_id}/README.md (created)
+   └── roadmaps/{app_id}/MASTER_ROADMAP.md (created)
  
- App Repo:       {repo_url}
-   └── docs/MASTER_ROADMAP.md (created)
-   └── docs/SYSTEM_ARCHITECTURE.md (created)
-   └── session-journals/README.md (created)
-   └── .zeos/APP_MANIFEST.json (created)
+ Project repo:   {repo_url}
+   └── CLAUDE.md (created)
 
- 📍 JOURNAL ROUTING: {repo}/session-journals/
-    All /snap and /end writes go to the app repo, NOT zeos Core.
+ 📍 JOURNAL ROUTING: ~/.zeos/journals/<app_id>/
+    All /snap and /end writes go here, never into a project repo or zeos Core.
 
  Next Steps:
    1. Edit SOUL file to add vision/purpose
@@ -471,7 +275,7 @@ Output scaffolding summary:
 |----------|-----------|
 | `kernel/BOOT_PROTOCOL.md` | initial-boot Option [2] triggers this protocol |
 | `modules/constraints/ZEOS_MODULE_002_SHELL_PROTOCOL.md` | Lists `/newproject` command |
-| `apps/REGISTRY.json` | Updated by this protocol |
+| `~/.zeos/apps/REGISTRY.json` | Updated by this protocol |
 
 ---
 

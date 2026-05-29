@@ -6,8 +6,8 @@ Contributor doctrine for working on **zeos itself** (not for projects that *use*
 
 - `kernel/` — immutable core: `SOUL.md`, `BOOT_PROTOCOL.md`, plus `lean/` fast-boot variants.
 - `modules/` — governance docs by type: `constraints/` (binding), `protocols/` (patterns), `behaviors/` (onboarding/UX).
-- `profiles/` — operator profile templates. The installer copies `profiles/template/` to `profiles/<your-name>/`.
-- `apps/REGISTRY.json` — project registry. Per-project SOUL / MEMORY / journals live in `souls/`, `memory/`, `journals/` (all gitignored).
+- `profiles/template/`: operator profile template. The installer copies it to `~/.zeos/profiles/<your-name>/` (operator profiles are state, not repo content).
+- `~/.zeos/apps/REGISTRY.json`: project registry (operator state). Per-project SOUL / MEMORY / journals / roadmap live under `~/.zeos/{souls,memory,journals,roadmaps}/<app_id>/`, outside any repo.
 - `infrastructure/inject/` — TypeScript MCP server (the runtime).
 - `infrastructure/overseer/` — Python MCP server for multi-agent paired-lane patterns.
 - `infrastructure/mcp-servers/` — offline-first MCP suite (pnpm workspace, optional).
@@ -33,7 +33,7 @@ cd infrastructure/mcp-servers && pnpm install && pnpm build && pnpm test
 - **TypeScript** (inject, MCP servers): tsc strict mode, no implicit any.
 - **Python** (overseer, newproject.py): 4-space indent, type hints where load-bearing, stdlib-only for `tools/`.
 - **Naming**: module docs follow `ZEOS_MODULE_###_NAME.md`. Skill dirs are lowercase (`zeos`, `project`, `newproject`, `snap`, `end`, `team`).
-- **Journals** (for contributor work on zeos itself): `~/projects/zeos/journals/zeos-dev/YYYY-MM-DD-NNN-<agent>.md` — written automatically by `/snap` and `/end` when `/project zeos-dev` is active.
+- **Journals** (for contributor work on zeos itself): `~/.zeos/journals/zeos-dev/YYYY-MM-DD-NNN-<agent>.md`, written automatically by `/snap` and `/end` when `/project zeos-dev` is active.
 
 ## Commits & PRs
 
