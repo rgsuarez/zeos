@@ -13,12 +13,14 @@ End the current zeos session. Updates MEMORY.md with session summary.
 
 Use the `zeos_end_session` MCP tool:
 
+> All fields are plain JSON strings. Do not wrap content in XML tags.
+
 ```
 mcp__zeos__zeos_end_session({
-  project: "<current-project-id>",
-  summary: "<session summary for MEMORY.md>",
-  delta: "<final work delta>",
-  nextActions: "<handoff for next session>"
+  project: "PROJECT_ID",
+  summary: "ONE_PARAGRAPH_SUMMARY",
+  delta: "BRIDGE_CONTENT",
+  nextActions: "NEXT_HANDOFF"
 })
 ```
 
