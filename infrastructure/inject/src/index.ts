@@ -45,6 +45,9 @@ import {
   titleFromSummary,
   stripListMarker,
   firstContentLine,
+  detectToolGrammarLeak,
+  buildErrorEnvelope,
+  buildToolGrammarLeakResponse,
   type BridgeSections,
 } from "./lib/bridge.js";
 import {
@@ -1067,6 +1070,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "zeos_snap": {
+        const leak = detectToolGrammarLeak(args as Record<string, unknown> | undefined);
+        if (leak) {
+          return {
+            content: [{ type: "text", text: buildToolGrammarLeakResponse(leak) }],
+            isError: true,
+          };
+        }
         const project = args?.project as string;
         const delta = (args?.delta as string) || "";
         const note = (args?.note as string) || "";
@@ -1084,12 +1094,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         if (!project || !bridge) {
-          return { content: [{ type: "text", text: "Error: project and bridge content required" }], isError: true };
+          const missing: string[] = [];
+          if (!project) missing.push("project");
+          if (!bridge) missing.push("bridge content (delta or one of objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move)");
+          return {
+            content: [{
+              type: "text",
+              text: buildErrorEnvelope({
+                error_code: "ZEOS_MISSING_REQUIRED",
+                error: "Missing required fields for zeos_snap.",
+                missing_fields: missing,
+                hint: "Provide `project` plus at least one bridge-content field (`delta` is the catch-all).",
+                expected_shape: {
+                  project: "string (required)",
+                  delta: "string (catch-all bridge content; required if no structured fields provided)",
+                  objective: "string (optional)",
+                  next_tactical_move: "string (optional)",
+                },
+              }),
+            }],
+            isError: true,
+          };
         }
 
         const app = findProject(project);
         if (!app) {
-          return { content: [{ type: "text", text: `Error: Project not found: ${project}` }], isError: true };
+          return {
+            content: [{
+              type: "text",
+              text: buildErrorEnvelope({
+                error_code: "ZEOS_PROJECT_NOT_FOUND",
+                error: `Project not found: ${project}`,
+                hint: "Check the project registry at apps/REGISTRY.json or run zeos_fleet to list known projects.",
+                offending_field: "project",
+                offending_sample: project,
+              }),
+            }],
+            isError: true,
+          };
         }
 
         // Auto-resolve agent from session registry, fallback to explicit param or default
@@ -1122,7 +1164,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (!targetJournal) {
-          return { content: [{ type: "text", text: "Error: No active journal found. Load project first." }], isError: true };
+          return {
+            content: [{
+              type: "text",
+              text: buildErrorEnvelope({
+                error_code: "ZEOS_NO_ACTIVE_JOURNAL",
+                error: "No active journal found for this agent.",
+                hint: "Run /project first with your project id to initialize a session journal for this agent.",
+              }),
+            }],
+            isError: true,
+          };
         }
 
         const journalPath = path.join(expanded, targetJournal);
@@ -1154,6 +1206,13 @@ ${formatRedactionNotice(redactions)}
       }
 
       case "zeos_end_session": {
+        const leak = detectToolGrammarLeak(args as Record<string, unknown> | undefined);
+        if (leak) {
+          return {
+            content: [{ type: "text", text: buildToolGrammarLeakResponse(leak) }],
+            isError: true,
+          };
+        }
         const project = args?.project as string;
         const summary = args?.summary as string;
         const title = (args?.title as string) || "";
@@ -1177,12 +1236,46 @@ ${formatRedactionNotice(redactions)}
         });
 
         if (!project || !summary || !finalBridge || !nextActions) {
-          return { content: [{ type: "text", text: "Error: project, summary, final bridge content, and nextActions required" }], isError: true };
+          const missing: string[] = [];
+          if (!project) missing.push("project");
+          if (!summary) missing.push("summary");
+          if (!finalBridge) missing.push("final bridge content (delta or one of objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move)");
+          if (!nextActions) missing.push("nextActions");
+          return {
+            content: [{
+              type: "text",
+              text: buildErrorEnvelope({
+                error_code: "ZEOS_MISSING_REQUIRED",
+                error: "Missing required fields for zeos_end_session.",
+                missing_fields: missing,
+                hint: "All four are required: `project`, `summary`, `nextActions`, and bridge content (`delta` is the catch-all).",
+                expected_shape: {
+                  project: "string (required)",
+                  summary: "string (required)",
+                  nextActions: "string (required)",
+                  delta: "string (catch-all bridge content; required if no structured fields provided)",
+                },
+              }),
+            }],
+            isError: true,
+          };
         }
 
         const app = findProject(project);
         if (!app) {
-          return { content: [{ type: "text", text: `Error: Project not found: ${project}` }], isError: true };
+          return {
+            content: [{
+              type: "text",
+              text: buildErrorEnvelope({
+                error_code: "ZEOS_PROJECT_NOT_FOUND",
+                error: `Project not found: ${project}`,
+                hint: "Check the project registry at apps/REGISTRY.json or run zeos_fleet to list known projects.",
+                offending_field: "project",
+                offending_sample: project,
+              }),
+            }],
+            isError: true,
+          };
         }
 
         // Auto-resolve agent from session registry, fallback to explicit param or default

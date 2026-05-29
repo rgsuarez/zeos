@@ -4037,7 +4037,29 @@ def send_handoff_digest(
     Send handoff digest to shadow (Monitor use).
 
     Monitor calls this with the synthesized digest payload.
-    The digest should be a JSON string matching HANDOVER_DIGEST_SPEC.md schema.
+    The digest should be a JSON string matching the HandoffDigest v1.0.0 schema.
+
+    Canonical reference: docs/HANDOVER_DIGEST_SPEC.md (relative to the zeos repo root).
+
+    Shape (abbreviated, keys only; see canonical reference for full types):
+        {
+          "version": "1.0.0",
+          "identity": {"project_id", "session_id", "primary_agent",
+                       "shadow_agent", "handoff_reason", "threshold_pct"},
+          "repo_state": {"repo_root", "branch", "ahead_behind",
+                         "git_status", "last_commit"},
+          "patch_diff": {"format", "content", "files_affected"},
+          "work_context": {"objective", "files_touched", "decisions_made"},
+          "mental_model": {"context_summary", "pending_assumptions"},
+          "next_actions": {"immediate", "queued", "blocked_by"},
+          "continuity": {"last_checkpoint", "last_memory_entry"},
+          "verification": {"ack_checks", "digest_hash"},
+          "redaction": {"applied": true, "scanner_version",
+                        "types_scanned", "redactions_made"}
+        }
+
+    Prefer building via synthesize_handoff_digest() and passing its returned
+    `digest` string here verbatim, rather than hand-rolling.
 
     Args:
         monitor: The monitor agent's identifier
@@ -4069,7 +4091,7 @@ def send_handoff_digest(
         return {
             "error": f"Digest exceeds size limit ({len(digest)} > {MAX_DIGEST_SIZE} chars)",
             "status": "error",
-            "suggestion": "Truncate per HANDOVER_DIGEST_SPEC prioritization rules"
+            "suggestion": "Truncate per the prioritization rules in docs/HANDOVER_DIGEST_SPEC.md (at the zeos repo root)"
         }
 
     # Check redaction flag is present
@@ -4676,7 +4698,7 @@ def redact_secrets(
     text: str
 ) -> dict:
     """
-    Scan text for secrets and redact them per HANDOVER_DIGEST_SPEC patterns.
+    Scan text for secrets and redact them per the patterns in docs/HANDOVER_DIGEST_SPEC.md (at the zeos repo root).
 
     Scans for 17 credential patterns (AWS keys, GitHub tokens, Stripe keys,
     Slack tokens, private keys, API keys, passwords, bearer tokens).
@@ -4791,7 +4813,7 @@ def synthesize_handoff_digest(
     threshold_pct: int = 80
 ) -> dict:
     """
-    Synthesize a HANDOFF_DIGEST per HANDOVER_DIGEST_SPEC v1.0.0.
+    Synthesize a HANDOFF_DIGEST per the v1.0.0 schema in docs/HANDOVER_DIGEST_SPEC.md (at the zeos repo root).
 
     Automates: git state, patch diff, terminal capture, journal/memory reads, redaction.
     Monitor provides: objective, next_actions, decisions, ack_checks (judgment calls).

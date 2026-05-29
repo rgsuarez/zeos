@@ -13,10 +13,12 @@ Save a progress snapshot to the current session journal.
 
 Use the `zeos_snap` MCP tool:
 
+> All fields are plain JSON strings. Do not wrap content in XML tags.
+
 ```
 mcp__zeos__zeos_snap({
-  project: "<current-project-id>",
-  delta: "<bridge content>",
+  project: "PROJECT_ID",
+  delta: "BRIDGE_CONTENT",
   note: "$ARGUMENTS"
 })
 ```
@@ -65,24 +67,24 @@ Every snapshot answers ONE question: "What does a future session need to know th
 
 ```markdown
 ### Objective
-<current mission in one sentence>
+`CURRENT_MISSION_ONE_SENTENCE`
 
 ### State of the World
-<1-3 sentences on what is true now>
+`STATE_DESCRIPTION_1_TO_3_SENTENCES`
 
 ### Decisions and Assumptions
-- Decision: <what was decided and why>
-- Assumption: <unverified premise, with how to verify>
+- Decision: `DECISION_AND_RATIONALE`
+- Assumption: `UNVERIFIED_PREMISE_WITH_VERIFICATION_PLAN`
 
 ### Open Threads
-- [ ] <pending work, blocker, or unresolved question>
+- [ ] `PENDING_WORK_OR_BLOCKER`
 
 ### Verification State
-- <tests, checks, or manual validation already completed>
-- <validation still missing>
+- `COMPLETED_VERIFICATION`
+- `MISSING_VERIFICATION`
 
 ### Next Tactical Move
-<the first action a cold next session should take>
+`FIRST_ACTION_COLD_SESSION_TAKES`
 ```
 
 ## Arguments
