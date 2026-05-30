@@ -76,11 +76,11 @@ SESSION                              — ephemeral work
 
 | Artifact | Path |
 |---|---|
-| Project SOUL | `~/.zeos/souls/<app_id>/SOUL.md` (zeos, gitignored) |
-| Session journals | `~/.zeos/journals/<app_id>/YYYY-MM-DD-NNN-<agent>.md` (zeos, gitignored) |
-| MEMORY.md | `~/.zeos/memory/<app_id>/MEMORY.md` (zeos, gitignored) |
+| Project SOUL | `~/.zeos/souls/<app_id>/SOUL.md` (operator state, outside the repo) |
+| Session journals | `~/.zeos/journals/<app_id>/YYYY-MM-DD-NNN-<agent>.md` (operator state, outside the repo) |
+| MEMORY.md | `~/.zeos/memory/<app_id>/MEMORY.md` (operator state, outside the repo) |
 | Project CLAUDE.md | `<local_path>/CLAUDE.md` (project repo, scaffolded by `/newproject`) |
-| Project registry | `~/.zeos/apps/REGISTRY.json` (zeos, committed) |
+| Project registry | `~/.zeos/apps/REGISTRY.json` (operator state, outside the repo, not committed; repo ships `apps/REGISTRY.example.json`) |
 
 ### Module structure
 

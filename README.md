@@ -104,7 +104,7 @@ All six are installed as Claude Code skills at `~/.claude/skills/`.
 --type=<type>         internal | venture | research | infrastructure | utility
 --local-path=<path>   Where the project lives locally (default: ~/projects/<id>/)
 --no-scaffold         Skip all scaffold writes (registry-only mode)
---no-commit           Edit REGISTRY.json but don't commit to local zeos
+--no-commit           Accepted for compatibility; no-op (registry is operator-local at ~/.zeos, never committed)
 --yes / -y            Skip the confirmation prompt
 ```
 
