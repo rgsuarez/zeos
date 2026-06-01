@@ -41,20 +41,19 @@ import {
   type RedactionResult,
 } from "./lib/redact.js";
 import {
-  buildBridgeContent,
-  normalizeTags,
   normalizeStringList,
-  clampImportance,
   formatListSection,
   titleFromSummary,
   stripListMarker,
   firstContentLine,
   buildErrorEnvelope,
-  sanitizeArgsToolGrammar,
   formatRecoveryNotice,
-  reconstructedPlaceholder,
   type BridgeSections,
 } from "./lib/bridge.js";
+import {
+  decideSnap,
+  decideEndSession,
+} from "./lib/handoff.js";
 import {
   MEMORY_ENTRY_DECAY_DEFAULT,
   MEMORY_ENTRY_IMPORTANCE_DEFAULT,
@@ -1032,6 +1031,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ]
 }));
 
+/**
+ * Value-blind diagnostic for the ZEOS_MISSING_REQUIRED reject path of zeos_snap
+ * and zeos_end_session. Logs to stderr (MCP uses stdout for protocol): the tool
+ * name, the count of arg keys, and the sorted key NAMES only. Never logs any
+ * value content, so it is safe on a payload that may carry secrets.
+ *
+ * Scope/limit: this classifies the SERVER-VISIBLE shape of a failing call
+ * (fully empty vs partial/incomplete). It cannot prove the pre-parse generator:
+ * malformed tool-grammar reduced to {} by the harness arrives here as zero keys,
+ * indistinguishable from a call the model emitted with no parameters.
+ */
+function logMissingRequiredDiagnostic(tool: string, rawArgs: unknown): void {
+  const keys = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+    ? Object.keys(rawArgs as Record<string, unknown>).sort()
+    : [];
+  console.error(`ZEOS_MISSING_REQUIRED_DIAGNOSTIC tool=${tool} arg_key_count=${keys.length} arg_keys=${keys.join(",") || "-"}`);
+}
+
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   let { name, arguments: args } = request.params;
@@ -1103,56 +1120,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "zeos_snap": {
-        const { args: sanitizedArgs, fields: sanitizedFields } = sanitizeArgsToolGrammar(args as Record<string, unknown> | undefined);
-        const recovered = sanitizedFields.length > 0;
-        if (recovered) args = sanitizedArgs;
-
-        const project = args?.project as string;
-        const delta = (args?.delta as string) || "";
-        const note = (args?.note as string) || "";
-        let tags = normalizeTags(args?.tags);
-        if (recovered && !tags.includes("recovered")) tags = ["recovered", ...tags.filter(t => t !== "recovered")].slice(0, 12);
-        let bridge = buildBridgeContent({
-          objective: args?.objective as string,
-          state: args?.state as string,
-          openThreads: normalizeStringList(args?.open_threads),
-          verified: normalizeStringList(args?.verified),
-          assumed: normalizeStringList(args?.assumed),
-          blockers: normalizeStringList(args?.blockers),
-          deadEnds: normalizeStringList(args?.dead_ends),
-          nextTacticalMove: args?.next_tactical_move as string,
-          delta
-        });
-
-        if (!project || (!bridge && !recovered)) {
-          const missing: string[] = [];
-          if (!project) missing.push("project");
-          if (!bridge) missing.push("bridge content (delta or one of objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move)");
-          return {
-            content: [{
-              type: "text",
-              text: buildErrorEnvelope({
-                error_code: "ZEOS_MISSING_REQUIRED",
-                error: "Missing required fields for zeos_snap.",
-                missing_fields: missing,
-                hint: "Provide `project` plus at least one bridge-content field (`delta` is the catch-all).",
-                expected_shape: {
-                  project: "string (required)",
-                  delta: "string (catch-all bridge content; required if no structured fields provided)",
-                  objective: "string (optional)",
-                  next_tactical_move: "string (optional)",
-                },
-              }),
-            }],
-            isError: true,
-          };
+        const decision = decideSnap(args as Record<string, unknown> | undefined);
+        if (decision.kind === "reject") {
+          logMissingRequiredDiagnostic("zeos_snap", args);
+          return { content: [{ type: "text", text: decision.envelope }], isError: true };
         }
-
-        const recoveryMissing: string[] = [];
-        if (recovered && !bridge) {
-          bridge = reconstructedPlaceholder("bridge content");
-          recoveryMissing.push("bridge");
-        }
+        const { project, bridge, note, tags, agentArg, recovered, sanitizedFields, recoveryMissing } = decision;
 
         const app = findProject(project);
         if (!app) {
@@ -1172,7 +1145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Auto-resolve agent from session registry, fallback to explicit param or default
-        const agent = (args?.agent as string) || _sessionAgents[app.app_id] || "claude";
+        const agent = agentArg || _sessionAgents[app.app_id] || "claude";
 
         const journalDir = resolveJournalPath(app);
         const expanded = expandPath(journalDir);
@@ -1250,67 +1223,12 @@ ${formatRedactionNotice(redactions)}
       }
 
       case "zeos_end_session": {
-        const { args: sanitizedArgs, fields: sanitizedFields } = sanitizeArgsToolGrammar(args as Record<string, unknown> | undefined);
-        const recovered = sanitizedFields.length > 0;
-        if (recovered) args = sanitizedArgs;
-
-        const project = args?.project as string;
-        let summary = args?.summary as string;
-        const title = (args?.title as string) || "";
-        const delta = (args?.delta as string) || "";
-        let nextActions = args?.nextActions as string;
-        let tags = normalizeTags(args?.tags);
-        if (recovered && !tags.includes("recovered")) tags = ["recovered", ...tags.filter(t => t !== "recovered")].slice(0, 12);
-        let importance = clampImportance(args?.importance);
-        if (recovered) importance = Math.min(importance, 2);
-        const why = (args?.why as string) || "";
-        const howToApply = (args?.how_to_apply as string) || "";
-        const refs = normalizeStringList(args?.refs);
-        let finalBridge = buildBridgeContent({
-          objective: args?.objective as string,
-          state: args?.state as string,
-          openThreads: normalizeStringList(args?.open_threads),
-          verified: normalizeStringList(args?.verified),
-          assumed: normalizeStringList(args?.assumed),
-          blockers: normalizeStringList(args?.blockers),
-          deadEnds: normalizeStringList(args?.dead_ends),
-          nextTacticalMove: args?.next_tactical_move as string,
-          delta
-        });
-
-        const recoveryMissing: string[] = [];
-        if (!project || ((!summary || !finalBridge || !nextActions) && !recovered)) {
-          const missing: string[] = [];
-          if (!project) missing.push("project");
-          if (!summary) missing.push("summary");
-          if (!finalBridge) missing.push("final bridge content (delta or one of objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move)");
-          if (!nextActions) missing.push("nextActions");
-          return {
-            content: [{
-              type: "text",
-              text: buildErrorEnvelope({
-                error_code: "ZEOS_MISSING_REQUIRED",
-                error: "Missing required fields for zeos_end_session.",
-                missing_fields: missing,
-                hint: "All four are required: `project`, `summary`, `nextActions`, and bridge content (`delta` is the catch-all).",
-                expected_shape: {
-                  project: "string (required)",
-                  summary: "string (required)",
-                  nextActions: "string (required)",
-                  delta: "string (catch-all bridge content; required if no structured fields provided)",
-                },
-              }),
-            }],
-            isError: true,
-          };
+        const decision = decideEndSession(args as Record<string, unknown> | undefined);
+        if (decision.kind === "reject") {
+          logMissingRequiredDiagnostic("zeos_end_session", args);
+          return { content: [{ type: "text", text: decision.envelope }], isError: true };
         }
-        if (recovered) {
-          // Degraded persistence: never lose a recovered handoff. Fill any
-          // still-missing required field with an honest placeholder.
-          if (!summary) { summary = reconstructedPlaceholder("summary"); recoveryMissing.push("summary"); }
-          if (!finalBridge) { finalBridge = reconstructedPlaceholder("bridge content"); recoveryMissing.push("bridge"); }
-          if (!nextActions) { nextActions = reconstructedPlaceholder("nextActions"); recoveryMissing.push("nextActions"); }
-        }
+        const { project, summary, title, finalBridge, nextActions, tags, importance, why, howToApply, refs, agentArg, recovered, sanitizedFields, recoveryMissing } = decision;
 
         const app = findProject(project);
         if (!app) {
@@ -1330,7 +1248,7 @@ ${formatRedactionNotice(redactions)}
         }
 
         // Auto-resolve agent from session registry, fallback to explicit param or default
-        const agent = (args?.agent as string) || _sessionAgents[app.app_id] || "claude";
+        const agent = agentArg || _sessionAgents[app.app_id] || "claude";
 
         const journalDir = resolveJournalPath(app);
         const expanded = expandPath(journalDir);
