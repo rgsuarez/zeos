@@ -5,6 +5,23 @@ All notable changes to zeos are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-05-31
+
+### Fixed: leaked tool-grammar no longer loses a handoff
+
+When an agent emitted its handoff with tool-grammar leaked into a string
+parameter (for example, wrapping the whole payload as pseudo-XML inside
+`summary`, or closing a parameter with a name-matching tag), `zeos_snap` and
+`zeos_end_session` rejected the call and the handoff was lost. They now recover:
+leaked tags are stripped losslessly (all other content preserved), any
+still-missing required field is filled with an explicit `[ZEOS_RECONSTRUCTED]`
+placeholder, the journal and MEMORY entry are marked as a recovered handoff and
+tagged `recovered` at low importance, and a `ZEOS_TOOL_GRAMMAR_SANITIZED`
+diagnostic line is logged. Empty inputs and unknown projects still reject.
+Redaction still runs before any write. The rejection detector sensitivity is
+unchanged; recovery is a separate, additive path. The inject MCP package
+version is bumped to 1.0.1 (independent of this 1.2.1 repo release).
+
 ## [1.2.0] - 2026-05-29
 
 ### Storage contract: operator state relocated to `~/.zeos`

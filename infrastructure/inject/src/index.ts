@@ -5,7 +5,7 @@
  * Part of zeos infrastructure. Provides efficient boot payloads.
  * Reduces 8-10 file reads to 1-2 MCP tool calls.
  *
- * Version: 1.0.0
+ * Version: 1.0.1
  * Location: ~/projects/zeos/infrastructure/inject/
  */
 
@@ -49,9 +49,10 @@ import {
   titleFromSummary,
   stripListMarker,
   firstContentLine,
-  detectToolGrammarLeak,
   buildErrorEnvelope,
-  buildToolGrammarLeakResponse,
+  sanitizeArgsToolGrammar,
+  formatRecoveryNotice,
+  reconstructedPlaceholder,
   type BridgeSections,
 } from "./lib/bridge.js";
 import {
@@ -502,7 +503,7 @@ function compileBootPayload(profile: string = DEFAULT_PROFILE): string {
 
     Profile: ${profile}
     Boot Mode: ${isFullMode ? 'FULL' : 'LEAN (default)'}
-    Injected via: zeos Inject MCP v1.0.0
+    Injected via: zeos Inject MCP v1.0.1
 
 ═══════════════════════════════════════════════════════════════
 
@@ -729,7 +730,7 @@ ${blueprintSection}
 const server = new Server(
   {
     name: "zeos-inject",
-    version: "1.0.0",
+    version: "1.0.1",
   },
   {
     capabilities: {
@@ -1033,7 +1034,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  let { name, arguments: args } = request.params;
 
   try {
     switch (name) {
@@ -1102,18 +1103,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "zeos_snap": {
-        const leak = detectToolGrammarLeak(args as Record<string, unknown> | undefined);
-        if (leak) {
-          return {
-            content: [{ type: "text", text: buildToolGrammarLeakResponse(leak) }],
-            isError: true,
-          };
-        }
+        const { args: sanitizedArgs, fields: sanitizedFields } = sanitizeArgsToolGrammar(args as Record<string, unknown> | undefined);
+        const recovered = sanitizedFields.length > 0;
+        if (recovered) args = sanitizedArgs;
+
         const project = args?.project as string;
         const delta = (args?.delta as string) || "";
         const note = (args?.note as string) || "";
-        const tags = normalizeTags(args?.tags);
-        const bridge = buildBridgeContent({
+        let tags = normalizeTags(args?.tags);
+        if (recovered && !tags.includes("recovered")) tags = ["recovered", ...tags.filter(t => t !== "recovered")].slice(0, 12);
+        let bridge = buildBridgeContent({
           objective: args?.objective as string,
           state: args?.state as string,
           openThreads: normalizeStringList(args?.open_threads),
@@ -1125,7 +1124,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           delta
         });
 
-        if (!project || !bridge) {
+        if (!project || (!bridge && !recovered)) {
           const missing: string[] = [];
           if (!project) missing.push("project");
           if (!bridge) missing.push("bridge content (delta or one of objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move)");
@@ -1147,6 +1146,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }],
             isError: true,
           };
+        }
+
+        const recoveryMissing: string[] = [];
+        if (recovered && !bridge) {
+          bridge = reconstructedPlaceholder("bridge content");
+          recoveryMissing.push("bridge");
         }
 
         const app = findProject(project);
@@ -1216,10 +1221,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const redactedGitSnapshot = redactSensitiveText(gitSnapshot);
         const redactions = mergeRedactions(redactedBridge, redactedNote, redactedGitSnapshot);
 
+        if (recovered) {
+          console.error(`ZEOS_TOOL_GRAMMAR_SANITIZED tool=zeos_snap project=${app.app_id} sanitized=${sanitizedFields.join(",") || "-"} missing=${recoveryMissing.join(",") || "-"}`);
+        }
+
         const snapEntry = `
 ## Checkpoint: ${timestamp}
 
-${redactedNote.text ? `**Note:** ${redactedNote.text}\n\n` : ''}${tags.length > 0 ? `**Tags:** ${tags.join(", ")}\n\n` : ''}### Bridge
+${recovered ? formatRecoveryNotice(sanitizedFields, recoveryMissing) + "\n\n" : ''}${redactedNote.text ? `**Note:** ${redactedNote.text}\n\n` : ''}${tags.length > 0 ? `**Tags:** ${tags.join(", ")}\n\n` : ''}### Bridge
 ${redactedBridge.text}
 
 ${redactedGitSnapshot.text ? `${redactedGitSnapshot.text}\n` : ''}
@@ -1234,28 +1243,30 @@ ${formatRedactionNotice(redactions)}
         const redactionSummary = redactions.count > 0
           ? ` (${redactions.count} sensitive value(s) redacted)`
           : "";
-        return { content: [{ type: "text", text: `✓ Checkpoint saved to ${journalPath}${redactionSummary}` }] };
+        const recoverySummary = recovered
+          ? `\nRecovered: payload leaked tool-grammar; tags stripped from ${sanitizedFields.join(", ")}. Pass each field as a separate parameter next time.`
+          : "";
+        return { content: [{ type: "text", text: `✓ Checkpoint saved to ${journalPath}${redactionSummary}${recoverySummary}` }] };
       }
 
       case "zeos_end_session": {
-        const leak = detectToolGrammarLeak(args as Record<string, unknown> | undefined);
-        if (leak) {
-          return {
-            content: [{ type: "text", text: buildToolGrammarLeakResponse(leak) }],
-            isError: true,
-          };
-        }
+        const { args: sanitizedArgs, fields: sanitizedFields } = sanitizeArgsToolGrammar(args as Record<string, unknown> | undefined);
+        const recovered = sanitizedFields.length > 0;
+        if (recovered) args = sanitizedArgs;
+
         const project = args?.project as string;
-        const summary = args?.summary as string;
+        let summary = args?.summary as string;
         const title = (args?.title as string) || "";
         const delta = (args?.delta as string) || "";
-        const nextActions = args?.nextActions as string;
-        const tags = normalizeTags(args?.tags);
-        const importance = clampImportance(args?.importance);
+        let nextActions = args?.nextActions as string;
+        let tags = normalizeTags(args?.tags);
+        if (recovered && !tags.includes("recovered")) tags = ["recovered", ...tags.filter(t => t !== "recovered")].slice(0, 12);
+        let importance = clampImportance(args?.importance);
+        if (recovered) importance = Math.min(importance, 2);
         const why = (args?.why as string) || "";
         const howToApply = (args?.how_to_apply as string) || "";
         const refs = normalizeStringList(args?.refs);
-        const finalBridge = buildBridgeContent({
+        let finalBridge = buildBridgeContent({
           objective: args?.objective as string,
           state: args?.state as string,
           openThreads: normalizeStringList(args?.open_threads),
@@ -1267,7 +1278,8 @@ ${formatRedactionNotice(redactions)}
           delta
         });
 
-        if (!project || !summary || !finalBridge || !nextActions) {
+        const recoveryMissing: string[] = [];
+        if (!project || ((!summary || !finalBridge || !nextActions) && !recovered)) {
           const missing: string[] = [];
           if (!project) missing.push("project");
           if (!summary) missing.push("summary");
@@ -1291,6 +1303,13 @@ ${formatRedactionNotice(redactions)}
             }],
             isError: true,
           };
+        }
+        if (recovered) {
+          // Degraded persistence: never lose a recovered handoff. Fill any
+          // still-missing required field with an honest placeholder.
+          if (!summary) { summary = reconstructedPlaceholder("summary"); recoveryMissing.push("summary"); }
+          if (!finalBridge) { finalBridge = reconstructedPlaceholder("bridge content"); recoveryMissing.push("bridge"); }
+          if (!nextActions) { nextActions = reconstructedPlaceholder("nextActions"); recoveryMissing.push("nextActions"); }
         }
 
         const app = findProject(project);
@@ -1337,6 +1356,10 @@ ${formatRedactionNotice(redactions)}
           redactedGitSnapshot
         );
 
+        if (recovered) {
+          console.error(`ZEOS_TOOL_GRAMMAR_SANITIZED tool=zeos_end_session project=${app.app_id} sanitized=${sanitizedFields.join(",") || "-"} missing=${recoveryMissing.join(",") || "-"}`);
+        }
+
         // Find THIS agent's journal via session registry (compound key), fallback to filesystem scan
         const sessionKey = `${app.app_id}::${agent}`;
         let targetJournal: string | null = _activeJournals[sessionKey] || null;
@@ -1368,7 +1391,7 @@ ${formatRedactionNotice(redactions)}
           const endEntry = `
 ## Session End: ${timestamp}
 
-### Summary
+${recovered ? formatRecoveryNotice(sanitizedFields, recoveryMissing) + "\n\n" : ''}### Summary
 ${redactedSummary.text}
 
 ### Final Bridge
@@ -1423,7 +1446,8 @@ ${formatRedactionNotice(redactions)}
               redactions,
               redactedWhy.text,
               redactedHowToApply.text,
-              redactedRefs
+              redactedRefs,
+              recovered ? formatRecoveryNotice(sanitizedFields, recoveryMissing) : ""
             );
 
             if (fs.existsSync(memoryPath)) {
@@ -1544,7 +1568,7 @@ Next session:
   /project ${app.app_id}
 
 Resume: ${redactedNextActions.text.split('\n')[0]}
-
+${recovered ? `\nRecovered from a tool-grammar-leaked payload; tags stripped from ${sanitizedFields.join(", ")}${recoveryMissing.length ? `; placeholders filled for ${recoveryMissing.join(", ")}` : ""}. Pass each field as a separate parameter next time.\n` : ''}
 ═══════════════════════════════════════════════════════════════
 `;
 
@@ -1586,7 +1610,7 @@ Resume: ${redactedNextActions.text.split('\n')[0]}
 - **FULL** (explicit): ~35K tokens, set \`boot_mode: full\` in profile
 
 ---
-*zeos Inject MCP v1.0.0*
+*zeos Inject MCP v1.0.1*
 `;
         return { content: [{ type: "text", text: helpText }] };
       }
@@ -1945,7 +1969,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("zeos Inject MCP server v1.0.0 running on stdio");
+  console.error("zeos Inject MCP server v1.0.1 running on stdio");
 }
 
 main().catch(console.error);

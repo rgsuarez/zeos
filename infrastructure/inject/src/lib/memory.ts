@@ -48,9 +48,12 @@ export function formatMemoryEntryContent(
   redactions: { count: number; labels: string[] },
   why: string = "",
   howToApply: string = "",
-  refs: string[] = []
+  refs: string[] = [],
+  recoveryNotice: string = ""
 ): string {
-  let output = `### Summary\n${summary.trim()}\n\n`;
+  let output = "";
+  if (recoveryNotice.trim()) output += `${recoveryNotice.trim()}\n\n`;
+  output += `### Summary\n${summary.trim()}\n\n`;
   if (why.trim()) output += `### Why\n${why.trim()}\n\n`;
   if (howToApply.trim()) output += `### How to Apply\n${howToApply.trim()}\n\n`;
   output += `### Final Bridge\n${finalBridge.trim()}\n\n`;
