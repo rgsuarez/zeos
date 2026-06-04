@@ -11,8 +11,11 @@
  * then either performs all I/O on a `persist` result, or (on a `reject` result)
  * logs a value-blind diagnostic and returns the envelope verbatim.
  *
- * Scope note: this module does NOT introduce the gated Phase 2 single-narrative
- * `handoff` field. It only mirrors the existing accepted fields.
+ * Phase 2: a preferred single-narrative `handoff` field is accepted on both
+ * tools. When present (non-empty after trim) it supplies the narrative content
+ * (end: summary/finalBridge/nextActions; snap: bridge) and the legacy content
+ * fields are ignored; first-class scalars still apply. The full blob is stored
+ * once (end: in finalBridge), never duplicated across fields.
  */
 import {
   sanitizeArgsToolGrammar,
@@ -22,7 +25,37 @@ import {
   clampImportance,
   buildErrorEnvelope,
   reconstructedPlaceholder,
+  firstContentLine,
 } from "./bridge.js";
+
+/** Concise pointer used when a handoff blob has no explicit next-actions section. */
+export const HANDOFF_NEXT_ACTIONS_FALLBACK = "Review the Final Bridge handoff.";
+
+const NEXT_SECTION_HEADING = /^#{1,6}\s*(next\s*(actions?|steps?|tactical\s*move)|todo|handoff)\b/i;
+const ANY_HEADING = /^#{1,6}\s+\S/;
+
+/**
+ * Derive a concise `nextActions` from a single-narrative handoff blob WITHOUT
+ * duplicating it. The full blob is stored once (in finalBridge); this returns
+ * the content under an explicit next-actions/todo/handoff heading when present
+ * (heading line excluded, up to the next heading or end), otherwise a short
+ * pointer. It NEVER returns the whole blob, so finalBridge and nextActions are
+ * never the same content.
+ */
+export function deriveNextActions(blob: string): string {
+  const lines = blob.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (NEXT_SECTION_HEADING.test(lines[i].trim())) start = i; // last matching heading wins
+  }
+  if (start === -1) return HANDOFF_NEXT_ACTIONS_FALLBACK;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (ANY_HEADING.test(lines[i].trim())) { end = i; break; }
+  }
+  const section = lines.slice(start + 1, end).join("\n").trim();
+  return section || HANDOFF_NEXT_ACTIONS_FALLBACK;
+}
 
 /** Reject outcome: the handler returns `envelope` verbatim (isError: true). */
 export interface RejectDecision {
@@ -101,6 +134,12 @@ export function decideSnap(rawArgs: Record<string, unknown> | undefined): SnapDe
     delta,
   });
 
+  // Phase 2: a single-narrative `handoff` blob, when present, supplies the
+  // bridge content; legacy fields above are ignored. `note`/`tags`/`agent`
+  // (first-class scalars) still apply.
+  const handoff = ((args?.handoff as string) ?? "").trim();
+  if (handoff) bridge = handoff;
+
   if (!project || (!bridge && !recovered)) {
     const missing: string[] = [];
     if (!project) missing.push("project");
@@ -113,12 +152,12 @@ export function decideSnap(rawArgs: Record<string, unknown> | undefined): SnapDe
         error_code: "ZEOS_MISSING_REQUIRED",
         error: "Missing required fields for zeos_snap.",
         missing_fields: missing,
-        hint: "Send each value as a separate plain JSON string parameter, never wrapped in XML tags. Minimal valid call: { project, delta }. `delta` is the catch-all for bridge content; the structured fields (objective/state/open_threads/verified/assumed/blockers/dead_ends/next_tactical_move) are optional alternatives.",
+        hint: "Send each value as a separate plain JSON string parameter, never wrapped in XML tags. Preferred minimal call: { project, handoff } where `handoff` is the whole snapshot as one prose block. Legacy fallback: { project, delta } (`delta` is the catch-all bridge content).",
         expected_shape: {
           project: "string (required)",
-          delta: "string (catch-all bridge content; required if no structured fields provided)",
-          objective: "string (optional)",
-          next_tactical_move: "string (optional)",
+          handoff: "string (preferred: the whole snapshot as one plain-text block)",
+          delta: "string (legacy catch-all bridge content; used only if no handoff)",
+          next_tactical_move: "string (optional, legacy)",
         },
       }),
     };
@@ -179,6 +218,18 @@ export function decideEndSession(rawArgs: Record<string, unknown> | undefined): 
     delta,
   });
 
+  // Phase 2: a single-narrative `handoff` blob, when present, supplies the
+  // narrative content. The full blob is stored ONCE in finalBridge; summary is a
+  // concise first line; nextActions is the extracted next-section or a short
+  // pointer (never the whole blob). Legacy content fields above are ignored;
+  // first-class scalars (title/importance/tags/why/how_to_apply/refs/agent) apply.
+  const handoff = ((args?.handoff as string) ?? "").trim();
+  if (handoff) {
+    summary = firstContentLine(handoff);
+    finalBridge = handoff;
+    nextActions = deriveNextActions(handoff);
+  }
+
   const recoveryMissing: string[] = [];
   if (!project || ((!summary || !finalBridge || !nextActions) && !recovered)) {
     const missing: string[] = [];
@@ -194,12 +245,13 @@ export function decideEndSession(rawArgs: Record<string, unknown> | undefined): 
         error_code: "ZEOS_MISSING_REQUIRED",
         error: "Missing required fields for zeos_end_session.",
         missing_fields: missing,
-        hint: "Send each value as a separate plain JSON string parameter, never wrapped in XML tags. Minimal valid call: { project, summary, nextActions, delta }. All four are required; `delta` is the catch-all for bridge content.",
+        hint: "Send each value as a separate plain JSON string parameter, never wrapped in XML tags. Preferred minimal call: { project, handoff } where `handoff` is the whole session handoff as one prose block. Legacy fallback: { project, summary, nextActions, delta }.",
         expected_shape: {
           project: "string (required)",
-          summary: "string (required)",
-          nextActions: "string (required)",
-          delta: "string (catch-all bridge content; required if no structured fields provided)",
+          handoff: "string (preferred: the whole session handoff as one plain-text block)",
+          summary: "string (legacy; used only if no handoff)",
+          nextActions: "string (legacy; used only if no handoff)",
+          delta: "string (legacy catch-all bridge content)",
         },
       }),
     };

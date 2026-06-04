@@ -5,6 +5,32 @@ All notable changes to zeos are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-03
+
+### Added: preferred single-narrative `handoff` field for `/end` and `/snap`
+
+`zeos_end_session` and `zeos_snap` now accept a preferred `handoff` field: the
+whole session handoff as one plain-text block. This replaces the need to split a
+handoff across many structured parameters, which was prone to tool-grammar
+corruption during emission. The field is listed first and is the recommended way
+to call both tools.
+
+Behavior:
+
+- `handoff` wins when present (non-empty after trim). For `zeos_end_session` the
+  blob is stored once as the Final Bridge, the Summary is a concise first line,
+  and Next Actions is the blob's next-actions section or a short pointer (never a
+  second copy of the blob). For `zeos_snap` the blob is the bridge content.
+- All legacy structured fields remain accepted (now marked deprecated in their
+  descriptions); when `handoff` is absent, behavior is byte-identical to before.
+- `zeos_end_session`'s `required` is relaxed to `["project"]`; the runtime still
+  rejects a call with no content.
+- `handoff` is covered by the tool-grammar recovery sanitizer, so a leaked
+  `<handoff>` envelope is stripped and recovered rather than persisted literally.
+
+The inject MCP package version is bumped to 1.1.0 (tracked independently of this
+1.3.0 repo release).
+
 ## [1.2.1] - 2026-05-31
 
 ### Fixed: leaked tool-grammar no longer loses a handoff

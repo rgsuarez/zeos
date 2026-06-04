@@ -5,7 +5,7 @@
  * Part of zeos infrastructure. Provides efficient boot payloads.
  * Reduces 8-10 file reads to 1-2 MCP tool calls.
  *
- * Version: 1.0.1
+ * Version: 1.1.0
  * Location: ~/projects/zeos/infrastructure/inject/
  */
 
@@ -502,7 +502,7 @@ function compileBootPayload(profile: string = DEFAULT_PROFILE): string {
 
     Profile: ${profile}
     Boot Mode: ${isFullMode ? 'FULL' : 'LEAN (default)'}
-    Injected via: zeos Inject MCP v1.0.1
+    Injected via: zeos Inject MCP v1.1.0
 
 ═══════════════════════════════════════════════════════════════
 
@@ -729,7 +729,7 @@ ${blueprintSection}
 const server = new Server(
   {
     name: "zeos-inject",
-    version: "1.0.1",
+    version: "1.1.0",
   },
   {
     capabilities: {
@@ -794,50 +794,54 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {
+          handoff: {
+            type: "string",
+            description: "PREFERRED. The entire snapshot as one plain-text block: objective, state, open threads, verified vs assumed, blockers, dead ends, and the next tactical move. Plain JSON string, no XML tags. When provided, this is the snapshot bridge content and the structured fields below are ignored. Still pass project (and optionally note/tags)."
+          },
           project: {
             type: "string",
             description: "Project ID"
           },
           delta: {
             type: "string",
-            description: "Backward-compatible free-form bridge content"
+            description: "DEPRECATED (still accepted): Backward-compatible free-form bridge content"
           },
           objective: {
             type: "string",
-            description: "Current mission in one sentence"
+            description: "DEPRECATED (still accepted): Current mission in one sentence"
           },
           state: {
             type: "string",
-            description: "What is true right now"
+            description: "DEPRECATED (still accepted): What is true right now"
           },
           open_threads: {
             type: "array",
             items: { type: "string" },
-            description: "Pending work, blockers, or unresolved questions"
+            description: "DEPRECATED (still accepted): Pending work, blockers, or unresolved questions"
           },
           verified: {
             type: "array",
             items: { type: "string" },
-            description: "Facts, tests, or checks verified this session"
+            description: "DEPRECATED (still accepted): Facts, tests, or checks verified this session"
           },
           assumed: {
             type: "array",
             items: { type: "string" },
-            description: "Assumptions still requiring verification"
+            description: "DEPRECATED (still accepted): Assumptions still requiring verification"
           },
           blockers: {
             type: "array",
             items: { type: "string" },
-            description: "Items blocking forward progress"
+            description: "DEPRECATED (still accepted): Items blocking forward progress"
           },
           dead_ends: {
             type: "array",
             items: { type: "string" },
-            description: "Approaches tried and rejected"
+            description: "DEPRECATED (still accepted): Approaches tried and rejected"
           },
           next_tactical_move: {
             type: "string",
-            description: "First action a cold next session should take"
+            description: "DEPRECATED (still accepted): First action a cold next session should take"
           },
           tags: {
             type: "array",
@@ -862,13 +866,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {
+          handoff: {
+            type: "string",
+            description: "PREFERRED. The entire session handoff as one plain-text block: what changed and why, current state, open threads, verification, and the next concrete actions. Plain JSON string, no XML tags. When provided, this is stored whole as the session bridge and the summary/structured fields below are ignored for narrative content. Still pass project (and optionally title/importance/tags/why/how_to_apply/refs)."
+          },
           project: {
             type: "string",
             description: "Project ID"
           },
           summary: {
             type: "string",
-            description: "Session summary for MEMORY.md"
+            description: "DEPRECATED (still accepted): Session summary for MEMORY.md"
           },
           title: {
             type: "string",
@@ -876,48 +884,48 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           delta: {
             type: "string",
-            description: "Backward-compatible final bridge"
+            description: "DEPRECATED (still accepted): Backward-compatible final bridge"
           },
           objective: {
             type: "string",
-            description: "Current mission in one sentence"
+            description: "DEPRECATED (still accepted): Current mission in one sentence"
           },
           state: {
             type: "string",
-            description: "What is true at session close"
+            description: "DEPRECATED (still accepted): What is true at session close"
           },
           open_threads: {
             type: "array",
             items: { type: "string" },
-            description: "Pending work, blockers, or unresolved questions"
+            description: "DEPRECATED (still accepted): Pending work, blockers, or unresolved questions"
           },
           verified: {
             type: "array",
             items: { type: "string" },
-            description: "Facts, tests, or checks verified this session"
+            description: "DEPRECATED (still accepted): Facts, tests, or checks verified this session"
           },
           assumed: {
             type: "array",
             items: { type: "string" },
-            description: "Assumptions still requiring verification"
+            description: "DEPRECATED (still accepted): Assumptions still requiring verification"
           },
           blockers: {
             type: "array",
             items: { type: "string" },
-            description: "Items blocking forward progress"
+            description: "DEPRECATED (still accepted): Items blocking forward progress"
           },
           dead_ends: {
             type: "array",
             items: { type: "string" },
-            description: "Approaches tried and rejected"
+            description: "DEPRECATED (still accepted): Approaches tried and rejected"
           },
           next_tactical_move: {
             type: "string",
-            description: "First action a cold next session should take"
+            description: "DEPRECATED (still accepted): First action a cold next session should take"
           },
           nextActions: {
             type: "string",
-            description: "Handoff for next session"
+            description: "DEPRECATED (still accepted): Handoff for next session"
           },
           tags: {
             type: "array",
@@ -946,7 +954,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Agent identifier for journal targeting (default: claude)"
           }
         },
-        required: ["project", "summary", "nextActions"]
+        required: ["project"]
       }
     },
     {
@@ -1528,7 +1536,7 @@ ${recovered ? `\nRecovered from a tool-grammar-leaked payload; tags stripped fro
 - **FULL** (explicit): ~35K tokens, set \`boot_mode: full\` in profile
 
 ---
-*zeos Inject MCP v1.0.1*
+*zeos Inject MCP v1.1.0*
 `;
         return { content: [{ type: "text", text: helpText }] };
       }
@@ -1887,7 +1895,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("zeos Inject MCP server v1.0.1 running on stdio");
+  console.error("zeos Inject MCP server v1.1.0 running on stdio");
 }
 
 main().catch(console.error);

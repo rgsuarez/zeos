@@ -208,7 +208,7 @@ export const FIELD_NAME_ALLOWLIST = [
   "summary", "delta", "nextActions", "next_tactical_move", "bridge", "invoke",
   "objective", "state", "open_threads", "verified", "assumed", "blockers",
   "dead_ends", "why", "how_to_apply", "refs", "tags", "importance", "agent",
-  "parameter",
+  "handoff", "parameter",
 ] as const;
 
 const FIELD_NAME_SET = new Set<string>(FIELD_NAME_ALLOWLIST.map(n => n.toLowerCase()));
