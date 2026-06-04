@@ -239,3 +239,29 @@ test("reconstructedPlaceholder: begins with the machine-distinguishable prefix",
 test("clampImportance: non-integer coerces to default (importance path stays safe)", () => {
   assert.equal(clampImportance("banana"), 3);
 });
+
+// ---- Phase 2: handoff is a recovery token ----
+
+test("handoff: strip trailing </handoff> removed, prose intact", () => {
+  const r = stripToolGrammarTags("done</handoff>");
+  assert.equal(r.text, "done");
+  assert.ok(r.removed >= 1);
+});
+
+test("handoff: balanced <handoff>..</handoff> removed, inner text kept", () => {
+  const r = stripToolGrammarTags("<handoff>x</handoff>");
+  assert.equal(r.text, "x");
+  assert.ok(r.removed >= 2);
+});
+
+test("handoff: shouldRecover triggers on a leaked handoff tag and names the field", () => {
+  const { triggered, fields } = shouldRecover({ handoff: "x</handoff>" });
+  assert.equal(triggered, true);
+  assert.ok(fields.includes("handoff"));
+});
+
+test("handoff: a similar non-allowlisted tag <handoffx> is NOT stripped (invariant preserved)", () => {
+  const r = stripToolGrammarTags("keep <handoffx>y</handoffx> intact");
+  assert.equal(r.removed, 0);
+  assert.equal(r.text, "keep <handoffx>y</handoffx> intact");
+});

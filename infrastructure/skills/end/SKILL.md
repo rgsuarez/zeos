@@ -18,13 +18,17 @@ Use the `zeos_end_session` MCP tool:
 ```
 mcp__zeos__zeos_end_session({
   project: "PROJECT_ID",
-  summary: "ONE_PARAGRAPH_SUMMARY",
-  delta: "BRIDGE_CONTENT",
-  nextActions: "NEXT_HANDOFF"
+  handoff: "The whole session handoff as one plain-text block: what changed and why, current state, open threads, verification, and the next concrete actions."
 })
 ```
 
-**Additional MEMORY parameters (all optional):**
+`handoff` is the preferred shape: write the full handoff as one prose block, the
+way you would brief a human picking this up cold. The legacy structured fields
+(`summary`, `delta`, `nextActions`, `objective`, `state`, `open_threads`,
+`verified`, `assumed`, `blockers`, `dead_ends`, `next_tactical_move`) remain
+accepted for backward compatibility; prefer `handoff`.
+
+**Additional MEMORY parameters (all optional, apply with `handoff` too):**
 
 - `title` - explicit one-line title for the MEMORY entry (default: first content line of summary)
 - `tags` - array of retrieval tags for MEMORY entry

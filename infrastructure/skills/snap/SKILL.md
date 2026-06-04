@@ -18,10 +18,15 @@ Use the `zeos_snap` MCP tool:
 ```
 mcp__zeos__zeos_snap({
   project: "PROJECT_ID",
-  delta: "BRIDGE_CONTENT",
+  handoff: "The whole snapshot as one plain-text block: objective, state now, open threads, verified vs assumed, blockers, dead ends, and the next tactical move.",
   note: "$ARGUMENTS"
 })
 ```
+
+`handoff` is the preferred shape: write the full snapshot as one prose block. The
+legacy structured fields (`delta`, `objective`, `state`, `open_threads`,
+`verified`, `assumed`, `blockers`, `dead_ends`, `next_tactical_move`) remain
+accepted for backward compatibility; prefer `handoff`.
 
 The agent identifier is auto-resolved from your `/project` load; no need to pass it explicitly.
 
