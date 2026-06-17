@@ -73,9 +73,15 @@ import {
 } from "./lib/memory.js";
 import {
   extractJournalSummary,
-  getLatestJournal,
   createJournalStub as _createJournalStubLib,
   checkParallelInstances,
+  getLatestJournalMeta,
+  findReusableEmptyStub,
+  shouldLoadPrior,
+  selectPriorJournal,
+  budgetPriorJournal,
+  isUnworkedStub,
+  appendSessionEnd,
   JOURNAL_SCHEMA_VERSION,
 } from "./lib/journal.js";
 import { getGitSnapshot as _getGitSnapshotByPath } from "./lib/git-snapshot.js";
@@ -415,9 +421,10 @@ function loadMemory(journalDir: string, memoryFilePath?: string): MemoryPayload 
       if (tier2.length >= 3) break;
 
       const content = fs.readFileSync(path.join(expanded, file), "utf-8");
-      // Skip empty stubs (frontmatter-only journals with no real content)
+      // Skip unworked stubs (including carry-forward-only stubs) using the same
+      // real-work definition as latest-selection.
       const withoutFrontmatter = content.replace(/^---[\s\S]*?---\s*/, '');
-      if (withoutFrontmatter.trim().length < 50) continue;
+      if (isUnworkedStub(content)) continue;
 
       // Multi-pattern summary extraction (handles all journal eras)
       const summary = extractJournalSummary(content);
@@ -560,8 +567,8 @@ Use one of the above project IDs.
   const soulPath = resolveSoulPath(app);
   const claudeMdPath = resolveProjectClaudeMdPath(app);
 
-  // Check for parallel instances
-  const activeInstances = checkParallelInstances(journalDir);
+  // Check for parallel instances (suppress THIS agent's own reusable empty stub)
+  const activeInstances = checkParallelInstances(journalDir, agentName);
   let parallelWarning = "";
   if (activeInstances.length > 0) {
     parallelWarning = `
@@ -604,17 +611,23 @@ Coordinate to avoid conflicts.
     ? `\n---\n\n${formatCarryForwardBlock(digest)}\n`
     : "";
 
-  // Get latest full journal for current session context (BEFORE stub creation)
-  const latestJournal = getLatestJournal(journalDir);
+  // Get the latest existing journal (the prior session relative to the new
+  // stub), structured so we can seed previous_session and drive the continuation
+  // load from a single read. BEFORE stub creation, so the new stub can't be it.
+  const priorMeta = getLatestJournalMeta(journalDir);
+  const latestJournal = priorMeta?.content ?? null;
+  const expectedPrev = priorMeta?.sessionId ?? null;
 
-  // NOW create journal stub (after reading previous state). Seed it with the
-  // carry-forward block when a digest exists; pass empty string otherwise so
-  // the stub stays byte-equivalent to the Phase 1 default shape.
-  const journalStub = _createJournalStubLib(
+  // Reuse this agent's same-day unworked stub when its previous_session already
+  // points at the correct prior; otherwise mint a fresh, correctly-seeded stub.
+  const today = new Date().toISOString().split("T")[0];
+  const reuse = findReusableEmptyStub(journalDir, agentName, today, expectedPrev);
+  const journalStub = reuse ?? _createJournalStubLib(
     journalDir,
     agentName,
     app ?? null,
-    digest ? formatCarryForwardBlock(digest) : ""
+    digest ? formatCarryForwardBlock(digest) : "",
+    expectedPrev
   );
 
   // Register this journal for the session — compound key ensures /snap and /end
@@ -655,9 +668,21 @@ ${memory.tier2_sessions.join('\n\n')}
 ---
 `;
   }
-  const journalSection = latestJournal
-    ? `# Latest Session Journal\n\n${latestJournal}`
-    : "[No prior session journals]";
+  // Render the latest journal verbatim (project invariant). When the latest
+  // session was interrupted or ended with open Next Actions, also render one
+  // budgeted prior journal (continuation), capped at 2 full journals.
+  let journalSection: string;
+  if (!priorMeta || !latestJournal) {
+    journalSection = "[No prior session journals]";
+  } else {
+    journalSection = `# Latest Session Journal\n\n${latestJournal}`;
+    if (shouldLoadPrior(priorMeta)) {
+      const prior = selectPriorJournal(journalDir, priorMeta);
+      if (prior) {
+        journalSection += `\n\n---\n\n# Prior Session Journal (continuation)\n\n${budgetPriorJournal(prior.meta)}`;
+      }
+    }
+  }
 
   // Check for an active blueprint declared in the (state-side) master roadmap.
   // The roadmap content was already read above; reuse it. Blueprint files
@@ -1310,10 +1335,8 @@ ${formatRedactionNotice(redactions)}
         const journalPath: string | null = targetJournal ? path.join(expanded, targetJournal) : null;
 
         if (journalPath) {
-          // Mark journal as complete
-          let content = fs.readFileSync(journalPath, 'utf-8');
-          content = content.replace('status: active', 'status: complete');
-
+          // Append-only finalization: the ## Session End block IS the completion
+          // marker; we never rewrite the file or flip frontmatter status.
           const endEntry = `
 ## Session End: ${timestamp}
 
@@ -1334,7 +1357,7 @@ ${formatRedactionNotice(redactions)}
 *Session complete*
 `;
 
-          fs.writeFileSync(journalPath, content + endEntry);
+          appendSessionEnd(journalPath, endEntry);
           verifyJournalWritten(journalPath);
         }
 
