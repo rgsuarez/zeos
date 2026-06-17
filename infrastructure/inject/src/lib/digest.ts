@@ -5,7 +5,7 @@ export interface ContinuityDigest {
   nextActions: string[];
 }
 
-function extractListItems(section: string): string[] {
+export function extractListItems(section: string): string[] {
   return section
     .split("\n")
     .map(l => l.trim())
@@ -17,7 +17,7 @@ function extractListItems(section: string): string[] {
     .filter(Boolean);
 }
 
-function filterPlaceholders(items: string[]): string[] {
+export function filterPlaceholders(items: string[]): string[] {
   return items.filter(s =>
     s !== "*None this session*" &&
     s !== "*None specified*" &&
