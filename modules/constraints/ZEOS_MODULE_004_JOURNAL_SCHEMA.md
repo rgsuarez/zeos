@@ -27,14 +27,19 @@ This module defines the canonical file structure and formatting standards for se
 
 > **Runtime-reconciled (v2.0.0, 2026-06-18).** This module is the binding,
 > kernel-referenced source of truth for journal structure. As of v2.0.0 it is
-> aligned to the actual Inject MCP runtime in
+> aligned end-to-end to the actual Inject MCP runtime in
 > `infrastructure/inject/src/lib/journal.ts` and the snap/end handlers in
 > `infrastructure/inject/src/index.ts`. The pre-2.0.0 schema described a
-> `topic`-slug filename, a `type`/`started`/`ended` frontmatter, and an
-> `/end`-flips-`status` completion model that the runtime never implemented.
-> Those are corrected below. Fields that are genuinely wanted but not yet built
-> (`type`, `ended`, `topic`, `paused` resume) are marked **Intentional-future**
-> and are NOT current law. See the Version History note at the end.
+> `topic`-slug filename, a `type`/`started`/`ended` frontmatter, an
+> `/end`-flips-`status` completion model, a `## Snap` checkpoint with
+> State-of-the-World / Open-Threads / Context sections, and a
+> Time/Delta/State-Before/State-After checkpoint body, none of which the runtime
+> ever implemented. All of those are corrected throughout (the file naming and
+> frontmatter in Sections 1-2, and the checkpoint shape, anti-patterns,
+> validation checklist, and integration references in Sections 3, 4, 6, and 7).
+> Fields that are genuinely wanted but not yet built (`type`, `ended`, `topic`,
+> `paused` resume) are marked **Intentional-future** and are NOT current law.
+> See the Version History note at the end.
 
 ---
 
@@ -192,27 +197,35 @@ Checkpoint entries follow the Shell Protocol Bridge Rule format: capture what a 
 
 ### 3.2 Checkpoint Structure
 
+This is the exact block the runtime appends on `/snap` (the `zeos_snap`
+handler in `infrastructure/inject/src/index.ts`). The heading is
+`## Checkpoint:` with an ISO timestamp, and the only required body section is
+`### Bridge`. `Note` and `Tags` are optional and emitted only when supplied:
+
 ```markdown
-## Snap — {timestamp}
+## Checkpoint: {ISO-8601-timestamp}
 
-### State of the World
-{1-3 sentences: what's different now vs before this session. Not what was done — what changed.}
+**Note:** {optional one-line operator note; omitted when not supplied}
 
-### Open Threads
-- {In-progress work, pending decisions, or known issues not captured in code, backlog, or memory}
+**Tags:** {optional comma-separated tags; omitted when not supplied}
 
-### Context That Would Be Lost
-- {Debugging insights, Operator preferences expressed this session, strategic decisions not yet persisted elsewhere}
+### Bridge
+{What a future session needs to know that it cannot derive from code, git
+history, CLAUDE.md, or MEMORY.md. Bridge Rule content, see Section 3.1.}
 ```
+
+After the Bridge, the runtime appends an optional git snapshot and a redaction
+notice when sensitive values were stripped; those are tool-generated, not
+operator-authored fields.
 
 ### 3.3 Field Requirements
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `timestamp` | Yes | ISO timestamp or HH:MM UTC |
-| `State of the World` | Yes | 1-3 sentences: what changed (not what was done) |
-| `Open Threads` | No | Bulleted list of in-progress work, pending decisions |
-| `Context That Would Be Lost` | No | Knowledge that dies with the session if not captured |
+| `timestamp` | Yes | ISO-8601 timestamp in the `## Checkpoint:` heading (runtime always emits ISO) |
+| `Bridge` | Yes | Bridge Rule content (Section 3.1): what a future session cannot derive from code, git, CLAUDE.md, or MEMORY.md |
+| `Note` | No | Optional one-line note; emitted only when supplied |
+| `Tags` | No | Optional comma-separated tags; emitted only when supplied |
 
 ### 3.4 Checkpoint Frequency Guidelines
 
@@ -229,22 +242,25 @@ Checkpoint entries follow the Shell Protocol Bridge Rule format: capture what a 
 
 ### 4.1 File Naming Anti-Patterns
 
+The runtime filename is `YYYY-MM-DD-NNN-<agent>.md` with no topic slug (Section
+1). The agent name is the trailing component.
+
 **Missing Sequence Number:**
 ```markdown
 # WRONG
-2026-01-05-api-refactor.md
+2026-01-05-claude.md
 
 # CORRECT
-2026-01-05-001-api-refactor.md
+2026-01-05-001-claude.md
 ```
 
-**Non-Kebab-Case Topics:**
+**Topic Slug Instead of Agent (not the schema):**
 ```markdown
 # WRONG
-2026-01-05-001-API_Refactor_Sprint.md
+2026-01-05-001-api-refactor-sprint.md
 
 # CORRECT
-2026-01-05-001-api-refactor-sprint.md
+2026-01-05-001-claude.md
 ```
 
 ### 4.2 Frontmatter Anti-Patterns
@@ -294,34 +310,38 @@ status: active
 
 ### 4.3 Checkpoint Anti-Patterns
 
-**Missing Delta Summary:**
+A checkpoint is a `## Checkpoint: <ISO-ts>` heading with a `### Bridge` body
+(Section 3.2). The anti-patterns are about Bridge content, not a `Time`/`Delta`/
+`State Before` body the runtime never emits.
+
+**Action Log Instead of a Bridge:**
 ```markdown
-# WRONG
-## Checkpoint: Auth Update
-**Time:** 11:45 UTC
+# WRONG - re-derivable from git; not Bridge content
+## Checkpoint: 2026-06-18T11:45:00.000Z
 
-### Actions Taken
-1. Updated auth middleware
+### Bridge
+1. Edited auth middleware
+2. Ran the test suite
+3. Committed the fix
 
-# CORRECT
-## Checkpoint: Auth Update
-**Time:** 11:45 UTC
-**Delta:** Fixed token expiration bug in auth middleware
+# CORRECT - what a future session cannot derive from code or git
+## Checkpoint: 2026-06-18T11:45:00.000Z
 
-### State Before
-...
+### Bridge
+Token expiry was set in seconds, not ms; the 1-minute logout was a unit bug,
+not a refresh-flow bug. Left the refresh path untouched on purpose.
 ```
 
-**Vague State Descriptions:**
+**Vague Bridge:**
 ```markdown
 # WRONG
-### State Before
-Things weren't working right.
+### Bridge
+Things weren't working right; fixed some of it.
 
 # CORRECT
-### State Before
-- JWT tokens expiring after 1 minute instead of 1 hour
-- Error rate at 15% on authenticated endpoints
+### Bridge
+JWT tokens expired after 1 minute instead of 1 hour because expiry was passed in
+seconds. Authenticated-endpoint error rate was ~15% until the unit fix landed.
 ```
 
 ---
@@ -330,13 +350,14 @@ Things weren't working right.
 
 ### 5.1 Scope
 
-Applies to session journals created before 2026-01-04, prior to this schema.
+Applies to session journals created before 2026-01-04, prior to any version of
+this schema.
 
 ### 5.2 Compatibility Policy
 
 1. **No Retroactive Modification Required**: Legacy journals SHOULD NOT be bulk-modified
 2. **Read Compatibility**: Tooling MUST gracefully handle legacy formats
-3. **Forward Compliance**: All journals created on or after 2026-01-04 MUST comply
+3. **Forward Compliance**: All journals the live runtime writes today comply with the **v2.0.0 runtime schema** defined by this module (Sections 1-3). The original v1.0.0 forward-compliance cutoff (journals created on or after 2026-01-04) still marks the boundary below which the legacy read-compatibility carve-out applies; journals written above it are validated against whichever version of this module was current when they were written, and against v2.0.0 going forward.
 4. **Voluntary Migration**: Projects MAY migrate legacy journals at their discretion
 
 ### 5.3 Legacy Journal Marker
@@ -371,10 +392,10 @@ legacy_format_version: pre-2026-01-04
 - [ ] `previous_session` is a quoted `session_id` or bare `null`
 
 ### Checkpoints
-- [ ] Checkpoints are in chronological order
-- [ ] Each checkpoint has Time and Delta fields
-- [ ] State Before and State After are present
-- [ ] Actions Taken uses numbered list
+- [ ] Checkpoints are in chronological order (append-only)
+- [ ] Each checkpoint heading is `## Checkpoint:` with an ISO-8601 timestamp
+- [ ] Each checkpoint has a `### Bridge` section with Bridge Rule content (Section 3.2)
+- [ ] `Note` and `Tags`, when present, sit above the Bridge
 
 ---
 
@@ -392,9 +413,15 @@ Session journal initialization integrates with BOOT_PROTOCOL when `/project <id>
 | `/end` | Appends a `## Session End:` block; this block IS the completion marker. Does NOT flip frontmatter `status` or rewrite the file |
 | `/project` | Creates (or reuses) the day's journal stub and seeds `previous_session` |
 
-### 7.3 scaffold.py
+### 7.3 Inject MCP Runtime
 
-The `generate_journal_readme()` function produces README.md files compliant with this schema. See `tools/scaffold.py`.
+Journal stubs that comply with this schema are produced by the Inject MCP
+runtime, not by a scaffolding script. `createJournalStub` in
+`infrastructure/inject/src/lib/journal.ts` emits the Section 2.1 frontmatter and
+the opening body; the `zeos_snap` and `zeos_end_session` handlers in
+`infrastructure/inject/src/index.ts` append the Section 3 checkpoint and the
+`## Session End:` completion block. There is no separate journal-README
+generator in `tools/`.
 
 ---
 
@@ -412,7 +439,7 @@ The `generate_journal_readme()` function produces README.md files compliant with
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-01-05 | Initial release |
-| 2.0.0 | 2026-06-18 | Runtime reconciliation. Aligned the binding schema to the actual Inject MCP runtime (`infrastructure/inject/src/lib/journal.ts` + the snap/end handlers in `src/index.ts`). Corrected: filename is `YYYY-MM-DD-NNN-<agent>.md` (no topic slug); frontmatter is `schema_version, session_id, project, date, sequence, agent, instance, status, created, previous_session` (replacing `type`/`started`/`ended`); completion is the appended `## Session End:` block under an append-only model (the prior `/end`-flips-`status` description was never implemented). The withdrawn fields (`type`, `ended`, `topic` slug, `paused` resume) are reclassified as Intentional-future, not current law. |
+| 2.0.0 | 2026-06-18 | Runtime reconciliation. Aligned the binding schema end-to-end to the actual Inject MCP runtime (`infrastructure/inject/src/lib/journal.ts` + the snap/end handlers in `src/index.ts`). Corrected: filename is `YYYY-MM-DD-NNN-<agent>.md` (no topic slug, Sections 1 and 4.1); frontmatter is `schema_version, session_id, project, date, sequence, agent, instance, status, created, previous_session` (replacing `type`/`started`/`ended`, Section 2); the checkpoint block is `## Checkpoint: <ISO-ts>` with a required `### Bridge` section plus optional `Note`/`Tags` (Sections 3.2-3.3), replacing the prior `## Snap` State-of-the-World/Open-Threads body; the checkpoint anti-patterns and the Section 6 validation checklist were re-expressed around the Bridge body (dropping the never-emitted Time/Delta/State-Before/State-After fields); the Section 7.3 integration reference now points at the Inject MCP runtime instead of a non-existent `tools/scaffold.py` README generator; and completion is the appended `## Session End:` block under an append-only model (the prior `/end`-flips-`status` description was never implemented). The withdrawn fields (`type`, `ended`, `topic` slug, `paused` resume) are reclassified as Intentional-future, not current law. |
 
 > **2.0.0 reconciliation note (2026-06-18).** This is a dated amendment to a
 > binding, kernel-referenced constraint. The kernel restatement in
