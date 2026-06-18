@@ -195,6 +195,22 @@ export function runHeadlessSnap(
       // never disturbed.
       return { status: "noop", reason: "journal-vanished-before-append" };
     }
+    if (code === "ELOOP") {
+      // The O_NOFOLLOW open refused a final journal component that is a symlink
+      // (a swap-during-open TOCTOU: the realpath-validated path was replaced by a
+      // symlink after containment passed). Refuse-not-follow is consistent with
+      // the existing "symlink escaping root -> no-op" stance and never blocks
+      // compaction. On darwin/Linux (zeos's targets) O_NOFOLLOW on a symlink final
+      // component yields ELOOP; EMLINK (a historical FreeBSD code) cannot arise on
+      // the supported platforms and is intentionally not mapped.
+      return { status: "noop", reason: "journal-symlink-refused", journalPath };
+    }
+    if (code === "ENOTDIR") {
+      // An intermediate path component is not a directory (one concrete failure
+      // mode of an intermediate-component swap). Distinct reason from the symlink
+      // case so the log stays actionable; a no-op, never an error.
+      return { status: "noop", reason: "journal-not-a-directory", journalPath };
+    }
     return {
       status: "error",
       reason: err instanceof Error ? err.message : String(err),
