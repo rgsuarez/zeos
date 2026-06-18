@@ -291,7 +291,7 @@ test("runHeadlessSnap: a journal swapped to an IN-ROOT symlink is refused (ELOOP
   });
 });
 
-test("runHeadlessSnap: a non-directory intermediate component (ENOTDIR) -> noop journal-not-a-directory", { skip: NOFOLLOW_SKIP }, () => {
+test("runHeadlessSnap: a non-directory intermediate component (ENOTDIR) -> noop journal-not-a-directory", () => {
   withTempState((root) => {
     seedJournal(root); // materialize the journals root so containment can resolve
     // Make an intermediate component a regular FILE: <root>/journals/demo-app/seg

@@ -205,7 +205,14 @@ test_c1_degrade_never_blocks() {
   # (b) bare root (HOME unset, no override) -> resolves to /.zeos -> rc 0, no write.
   local rc2; rc2="$( unset HOME; unset ZEOS_STATE_ROOT; precompact_log "nope"; echo $? )"
   assert "C1.7b precompact_log returns 0 with no HOME and no override (bare /.zeos)" "0" "$rc2"
-  rm -rf "$tmp"
+  # (c) tilde root with HOME unset must DEGRADE, not resolve to the tilde-stripped
+  # path. Aim the tilde at a WRITABLE location so a regression (writing the
+  # tilde-stripped path) would actually create a file; the fix must write nothing.
+  local wr; wr="$(mktemp -d)"
+  local rc3; rc3="$( unset HOME; export ZEOS_STATE_ROOT="~$wr/sub"; precompact_log "nope"; echo $? )"
+  assert "C1.7c precompact_log returns 0 for a tilde root with unset HOME" "0" "$rc3"
+  assert_no_file "C1.7c tilde root + unset HOME degrades (no write to the tilde-stripped path)" "$wr/sub/logs/precompact-snap.log"
+  rm -rf "$wr" "$tmp"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -315,6 +322,53 @@ test_c2_lib_source_failed() {
   rm -rf "$tmp"
 }
 
+test_c2_refusal_noop_logged() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  # A resolved-pointer refusal (the residual-2 O_NOFOLLOW case) surfaces as a
+  # no-op line but is ACTIONABLE: it must be logged, not swallowed as benign.
+  run_hook "$hook" "$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: no-op (journal-symlink-refused)" STUB_SNAP_RC=0
+  assert "C2.10 symlink-refused no-op: hook exits 0" "0" "$LAST_RC"
+  local log="$state/logs/precompact-snap.log"
+  assert_file "C2.10 symlink-refused no-op is LOGGED (not silently quiet)" "$log"
+  [ -f "$log" ] && assert_contains "C2.10 log records the refusal reason" "journal-symlink-refused" "$(cat "$log")"
+  rm -rf "$tmp"
+}
+
+test_c2_notadir_noop_logged() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  run_hook "$hook" "$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: no-op (journal-not-a-directory)" STUB_SNAP_RC=0
+  assert "C2.11 not-a-directory no-op: hook exits 0" "0" "$LAST_RC"
+  local log="$state/logs/precompact-snap.log"
+  assert_file "C2.11 not-a-directory no-op is LOGGED" "$log"
+  [ -f "$log" ] && assert_contains "C2.11 log records the not-a-directory reason" "journal-not-a-directory" "$(cat "$log")"
+  rm -rf "$tmp"
+}
+
+test_c2_no_session_id_quiet() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  # The OTHER benign reason (besides no-active-pointer) must also stay quiet.
+  run_hook "$hook" "$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: no-op (no-session-id)" STUB_SNAP_RC=0
+  assert "C2.12 no-session-id no-op: hook exits 0" "0" "$LAST_RC"
+  assert_no_file "C2.12 no-session-id no-op stays QUIET (benign non-zeos reason)" "$state/logs/precompact-snap.log"
+  rm -rf "$tmp"
+}
+
+test_c2_large_benign_output_quiet() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  # A benign no-op line followed by a large stderr blob (> the 64 KiB pipe buffer).
+  # The here-string match must NOT false-log it: the old printf|grep pipeline could
+  # SIGPIPE the upstream printf under pipefail and mis-log a benign snap.
+  local big; big="$(head -c 100000 /dev/zero | tr '\0' 'x')"
+  run_hook "$hook" "$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: no-op (no-active-pointer) $big" STUB_SNAP_RC=0
+  assert "C2.13 large benign output: hook exits 0" "0" "$LAST_RC"
+  assert_no_file "C2.13 large benign no-op stays QUIET (no SIGPIPE false-log)" "$state/logs/precompact-snap.log"
+  rm -rf "$tmp"
+}
+
 # ── run ──────────────────────────────────────────────────────────────────────
 printf '\nzeos PreCompact auto-snap hook tests\n'
 printf '\nC1 lib unit (select_supported_node + precompact_log):\n'
@@ -335,6 +389,10 @@ test_c2_unset_home
 test_c2_lib_missing
 test_c2_non_marker_failure
 test_c2_lib_source_failed
+test_c2_refusal_noop_logged
+test_c2_notadir_noop_logged
+test_c2_no_session_id_quiet
+test_c2_large_benign_output_quiet
 
 rm -rf "$STUB_DIR"
 

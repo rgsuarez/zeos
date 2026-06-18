@@ -48,12 +48,19 @@ precompact_log() {
   local line="$1"
   local state_root log msg sz
   state_root="${ZEOS_STATE_ROOT:-${HOME:-}/.zeos}"
-  # Expand a leading "~/" for parity with the Node resolver (path-resolver.ts
-  # expandPath): an operator (or test) ZEOS_STATE_ROOT='~/foo' must land under
-  # $HOME/foo, NOT a literal "~" directory. This expansion is deliberate; do
-  # NOT "simplify" it to a literal "~".
+  # Expand a leading "~/" the way the Node resolver does (path-resolver.ts
+  # expandPath) WHEN HOME is set: an operator (or test) ZEOS_STATE_ROOT='~/foo'
+  # must land under $HOME/foo, NOT a literal "~" directory. (With HOME unset the
+  # two intentionally diverge: Node falls back to the passwd home, while this
+  # degrades to a no-op below.) This expansion is deliberate; do NOT "simplify" it
+  # to a literal "~".
   case "$state_root" in
-    "~/"*) state_root="${HOME:-}${state_root#\~}" ;;
+    "~/"*)
+      # A tilde root needs HOME to anchor; with HOME unset/empty there is no safe
+      # target, so degrade to a no-op rather than resolve to a root-level "/foo".
+      [ -n "${HOME:-}" ] || return 0
+      state_root="${HOME}${state_root#\~}"
+      ;;
   esac
   # Degrade quietly (never block) when no real, HOME-anchored root can be formed:
   # an empty root, or a bare "/.zeos" (HOME unset AND no override) must not write.
@@ -61,13 +68,14 @@ precompact_log() {
   [ "$state_root" = "/.zeos" ] && return 0
   log="$state_root/logs/precompact-snap.log"
   mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
-  # Rotate-before-append so the log cannot grow without bound. Guard on existence
-  # so `wc` never reads a missing log (the input redirect `<"$log"` is opened
-  # BEFORE `2>/dev/null` takes effect, so on a first write the open failure would
-  # otherwise leak to stderr). `tr` strips any platform `wc` padding so the
-  # integer test can never error.
+  # Rotate-before-append so the log cannot grow without bound. Guard on existence,
+  # and order `2>/dev/null` BEFORE `<"$log"` so that even if the log is removed
+  # between the guard and the open, the "cannot open" message is routed to
+  # /dev/null: an input-redirect failure is reported to fd 2 as it already stands,
+  # so the stderr redirect must precede the input redirect. `tr` strips any
+  # platform `wc` padding so the integer test can never error.
   if [ -f "$log" ]; then
-    sz="$(wc -c <"$log" 2>/dev/null | tr -d '[:space:]')"
+    sz="$(wc -c 2>/dev/null <"$log" | tr -d '[:space:]')"
     [ "${sz:-0}" -gt 262144 ] && mv "$log" "$log.1" 2>/dev/null
   fi
   # Normalize to a single physical line so one record == one event. Wrap the
