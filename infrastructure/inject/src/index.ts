@@ -94,6 +94,7 @@ import {
 } from "./lib/digest.js";
 import { findMemoryByTags } from "./lib/memory-find.js";
 import { promoteMemoryEntryToSoul } from "./lib/soul-promote.js";
+import { rebuildMemoryFromJournals } from "./lib/memory-rebuild.js";
 import {
   atomicWriteFileSync,
   atomicWriteWithBackup,
@@ -1026,6 +1027,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ["project", "entry_date", "section"]
       }
+    },
+    {
+      name: "zeos_memory_rebuild",
+      description: "Rebuild MEMORY.md as a regenerable VIEW over the journal log: re-derive each entry's content and decay model deterministically from journal ## Session End: blocks. NOT lossless - it regenerates content + re-seeds decay from journals, and FORWARD-CARRIES curation metadata (promoted, importance, pin state, archive placement) from the current MEMORY.md/MEMORY_ARCHIVE.md, matching primarily by Source Journal path and failing closed on ambiguity. Entries deleted by past manual curation are unrecoverable. Defaults to dry_run=true and returns a preview + diff without writing. Pass dry_run=false to commit (refuses if a promoted/pinned entry would be dropped).",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          project: {
+            type: "string",
+            description: "Project ID"
+          },
+          dry_run: {
+            type: "boolean",
+            description: "When true (default), return preview + diff without writing. Pass false to commit."
+          }
+        },
+        required: ["project"]
+      }
     }
   ]
 }));
@@ -1046,6 +1065,76 @@ function logMissingRequiredDiagnostic(tool: string, rawArgs: unknown): void {
     ? Object.keys(rawArgs as Record<string, unknown>).sort()
     : [];
   console.error(`ZEOS_MISSING_REQUIRED_DIAGNOSTIC tool=${tool} arg_key_count=${keys.length} arg_keys=${keys.join(",") || "-"}`);
+}
+
+/**
+ * Render the dry-run preview (and the fail-closed commit-refused message) for
+ * zeos_memory_rebuild. Always documents regenerated-vs-preserved-vs-unrecoverable
+ * so the rebuild is never presented as lossless.
+ */
+function formatRebuildPreview(
+  project: string,
+  result: ReturnType<typeof rebuildMemoryFromJournals>,
+  refused = false
+): string {
+  const carriedDurable = result.provenance.filter(p => p.carry === "durable").length;
+  const carriedDateTitle = result.provenance.filter(p => p.carry === "date-title").length;
+  const carriedNone = result.provenance.filter(p => p.carry === "none").length;
+  const promoted = result.provenance.filter(p => p.promoted).length;
+
+  const lines: string[] = [];
+  lines.push(
+    refused
+      ? `[REBUILD REFUSED] Project: ${project} - a promoted or pinned entry would be dropped. Nothing was written.`
+      : `[DRY RUN] zeos_memory_rebuild | Project: ${project}`
+  );
+  lines.push("");
+  lines.push(result.diff);
+  lines.push("");
+  lines.push("Regenerated from journals (content + decay model):");
+  lines.push(`  - ${result.journalEntryCount} entries rebuilt from ## Session End: blocks`);
+  lines.push("Preserved from current state (forward-carried curation metadata):");
+  lines.push(`  - ${carriedDurable} matched by Source Journal (durable id)`);
+  lines.push(`  - ${carriedDateTitle} matched by date+title (collision-free fallback)`);
+  lines.push(`  - ${carriedNone} had no current match (new/regenerated, default metadata)`);
+  lines.push(`  - ${promoted} carry a [promoted:true] marker`);
+
+  if (result.unrecoverable.length > 0) {
+    lines.push("Unrecoverable (deleted by past manual curation; not in the journal log):");
+    for (const u of result.unrecoverable) {
+      lines.push(`  - ${u.date}: ${u.title}${u.sourceJournal ? ` (${u.sourceJournal})` : ""}`);
+    }
+  }
+
+  if (result.conflicts.length > 0) {
+    lines.push("");
+    lines.push("CONFLICTS (block commit):");
+    for (const c of result.conflicts) {
+      lines.push(`  - [${c.kind}] ${c.date}: ${c.title} - ${c.reason}`);
+    }
+    lines.push("");
+    lines.push("Resolve by restoring the dropped entry's journal Session End block, or accept the loss explicitly; commit is refused while a promoted/pinned entry would be dropped.");
+  } else if (!refused) {
+    lines.push("");
+    lines.push("This is a regenerate-content-preserve-metadata rebuild, NOT a lossless reconstruction. To commit, call again with dry_run=false.");
+  }
+
+  return lines.join("\n");
+}
+
+/** Render the post-commit confirmation for zeos_memory_rebuild. */
+function formatRebuildCommit(
+  project: string,
+  result: ReturnType<typeof rebuildMemoryFromJournals>
+): string {
+  const lines: string[] = [];
+  lines.push(`Rebuilt MEMORY.md for project ${project} from ${result.journalEntryCount} journal Session End block(s).`);
+  lines.push(`Active entries: ${result.rebuilt.entries.length} | Archived: ${result.rebuilt.archivedEntries.length}`);
+  lines.push("Content + decay model regenerated from journals; promoted/importance/pin/archive metadata preserved from prior state.");
+  if (result.unrecoverable.length > 0) {
+    lines.push(`Note: ${result.unrecoverable.length} entry(ies) deleted by past curation could not be reconstructed (state, not log).`);
+  }
+  return lines.join("\n");
 }
 
 // Handle tool calls
@@ -1897,6 +1986,111 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             text: `Promoted MEMORY entry ${entry_date} to SOUL.md section "${section}" for project ${project}. Source MEMORY entry marked [promoted:true].`
           }]
         };
+      }
+
+      case "zeos_memory_rebuild": {
+        const project = args?.project as string;
+        const dry_run = args?.dry_run !== false; // default true
+
+        if (!project) {
+          return { content: [{ type: "text", text: "Error: project is required" }], isError: true };
+        }
+
+        const app = findProject(project);
+        if (!app) {
+          return { content: [{ type: "text", text: `Error: Project not found: ${project}` }], isError: true };
+        }
+
+        const memoryPath = expandPath(resolveMemoryPath(app));
+        const archivePath = path.join(path.dirname(memoryPath), "MEMORY_ARCHIVE.md");
+        const journalDir = resolveJournalPath(app);
+        const tokenLimit = getMemoryTokenLimit();
+
+        // DRY RUN: read current state without a lock (read-only preview), compute
+        // the rebuild + diff, and return it. No mutation, so no lock needed.
+        if (dry_run) {
+          const currentMemory = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf-8") : "";
+          const currentArchive = fs.existsSync(archivePath) ? fs.readFileSync(archivePath, "utf-8") : "";
+          const result = rebuildMemoryFromJournals(journalDir, {
+            tokenLimit,
+            currentMemory,
+            currentArchive,
+            projectName: app.name,
+          });
+          return {
+            content: [{ type: "text", text: formatRebuildPreview(project, result) }],
+          };
+        }
+
+        // COMMIT. Ensure the memory directory exists BEFORE acquiring the lock:
+        // the lock file is a sibling of MEMORY.md, so on a first-ever rebuild
+        // (no memory/<app_id>/ dir yet) the lock write itself would ENOENT. The
+        // directory create is a benign idempotent mkdir, not a content mutation,
+        // so it is safe to run outside the lock.
+        fs.mkdirSync(path.dirname(memoryPath), { recursive: true });
+
+        // Take the memory lock BEFORE reading so the whole read-modify-write is
+        // serialized against a concurrent /end or curate (a stale read would
+        // clobber their write - the lost-update class).
+        const lockAcquired = acquireMemoryLock(memoryPath);
+        if (!lockAcquired) {
+          return {
+            content: [{
+              type: "text",
+              text: "Error: Could not acquire MEMORY.md lock (parallel write in progress). Retry the rebuild shortly.",
+            }],
+            isError: true,
+          };
+        }
+
+        try {
+          // Read CURRENT state inside the held lock so forward-carry sees the
+          // freshest committed metadata.
+          const currentMemory = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf-8") : "";
+          const currentArchive = fs.existsSync(archivePath) ? fs.readFileSync(archivePath, "utf-8") : "";
+          const result = rebuildMemoryFromJournals(journalDir, {
+            tokenLimit,
+            currentMemory,
+            currentArchive,
+            projectName: app.name,
+          });
+
+          // Fail closed: refuse to commit a rebuild that would drop a promoted
+          // or pinned entry. The conflict is reported, nothing is written.
+          if (!result.canCommit) {
+            return {
+              content: [{ type: "text", text: formatRebuildPreview(project, result, true) }],
+              isError: true,
+            };
+          }
+
+          // Two-file ordering (mirrors /end): write the ARCHIVE (destination)
+          // before MEMORY (source) so a crash between them leaves a duplicate
+          // (collapsed by dedupe-on-load) rather than a loss. Both are crash-safe.
+          if (result.rebuilt.archivedEntries.length > 0) {
+            atomicWriteFileSync(archivePath, formatMemoryMd(result.rebuilt, "archive"));
+          }
+          atomicWriteWithBackup(memoryPath, formatMemoryMd(result.rebuilt));
+
+          // Remove a now-stale MEMORY_ARCHIVE.md when the rebuild produced no
+          // archived entries. Without this, a pre-existing archive holding
+          // entries the rebuild no longer reproduces (the unrecoverable case)
+          // would survive on disk and silently resurrect on the next load via
+          // dedupe-on-load, contradicting the regenerable-view contract and the
+          // diff the operator just approved. Done AFTER the MEMORY write so the
+          // archive-first crash-safety ordering above is preserved (a crash
+          // before this unlink leaves a harmless empty/duplicate archive, never
+          // a loss). Mirrors the delete/promote convention.
+          if (result.rebuilt.archivedEntries.length === 0 && fs.existsSync(archivePath)) {
+            fs.unlinkSync(archivePath);
+          }
+
+          return {
+            content: [{ type: "text", text: formatRebuildCommit(project, result) }],
+          };
+        } finally {
+          releaseMemoryLock(memoryPath);
+        }
       }
 
       default:
