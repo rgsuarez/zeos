@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { expandPath } from "../path-resolver.js";
-import { atomicWriteFileSync, atomicWriteWithBackup } from "./atomic-write.js";
+import { atomicWriteFileSync, atomicWriteWithBackup, assertNoSecrets } from "./atomic-write.js";
 import { titleFromSummary } from "./bridge.js";
 import {
   listJournalMetas,
@@ -127,6 +127,17 @@ interface CarriedMetadata {
    * rebuild would silently erase them (rewrite the entry with refs=[]).
    */
   refs: string[];
+  /**
+   * `### Why` and `### How to Apply` from the CURRENT entry body. These are
+   * authored only by the `/end` flow into the MEMORY entry (the journal Session
+   * End block has no such sections), so they live ONLY in the current entry and
+   * must be forward-carried like refs. They are durable doctrine that
+   * `zeos_soul_promote` reads back (`extractDoctrineSections`) and REQUIRES (it
+   * rejects an entry with neither); a rebuild that dropped them would erase the
+   * doctrinal content and make a later promotion fail.
+   */
+  why: string;
+  howToApply: string;
   /** For conflict reporting. */
   date: string;
   title: string;
@@ -167,6 +178,15 @@ function parseListSection(endRegion: string, section: string): string[] {
  * them on entry.refs). Same list shape as parseListSection. */
 function extractBodyRefs(content: string): string[] {
   return parseListSection(content, "References");
+}
+
+/** Extract a single prose body section (`### Why`, `### How to Apply`) from a
+ * MEMORY entry body. `extractSection` is anchored to a Session End region and
+ * stops at the next `###`/`##`/HR; an entry body is the same shape, so it isolates
+ * the section's text cleanly. Used to forward-carry doctrine the journal log
+ * never holds. */
+function extractBodySection(content: string, section: string): string {
+  return extractSection(content, section);
 }
 
 /** Byte ranges in `content` covered by fenced (```) code blocks, matching the
@@ -225,15 +245,31 @@ interface RebuiltEntry {
 }
 
 /**
+ * Body sections the journal `## Session End:` block never carries, so they are
+ * always [] / "" when journal-derived and can ONLY arrive via forward-carry from
+ * the current MEMORY entry. Re-rendering the body with these overrides keeps a
+ * rebuilt entry from silently erasing operator-set References / Why / How to
+ * Apply (the last two are durable doctrine `zeos_soul_promote` reads back, so a
+ * rebuild that dropped them would later cause promotion to reject the entry).
+ */
+interface CarryOverrides {
+  refs: string[];
+  why: string;
+  howToApply: string;
+}
+
+/**
  * Render a rebuilt entry's body through the SAME `formatMemoryEntryContent` the
  * live `/end` path uses (so a rebuilt entry is byte-shaped like a
  * natively-written one and carries the Source Journal pointer that is its
- * durable identity). `refs` is passed explicitly so forward-carry can rebuild
- * the body with operator-supplied references that are not in the journal log.
+ * durable identity). The non-journal sections (`refs`, `why`, `howToApply`) are
+ * passed explicitly so forward-carry can rebuild the body with operator-supplied
+ * content that is not in the journal log; they default to the journal-derived
+ * empty values.
  */
 function renderEntryContent(
   sections: RebuiltEntry["sections"],
-  refs: string[]
+  overrides: Partial<CarryOverrides> = {}
 ): string {
   return formatMemoryEntryContent(
     sections.summary,
@@ -241,9 +277,9 @@ function renderEntryContent(
     sections.nextActions,
     sections.journalPath,
     { count: 0, labels: [] },
-    "", // Why: not part of the Session End block
-    "", // How to Apply: not part of the Session End block
-    refs,
+    overrides.why ?? "", // Why: not in the Session End block; forward-carried only
+    overrides.howToApply ?? "", // How to Apply: forward-carried only
+    overrides.refs ?? sections.refs,
     "" // recovery notice: not regenerated
   );
 }
@@ -258,7 +294,17 @@ function renderEntryContent(
 function journalToEntry(meta: JournalMeta, absoluteJournalPath: string): RebuiltEntry {
   const region = sessionEndRegion(meta.content) ?? meta.content;
 
-  const summary = extractJournalSummary(region) ?? "";
+  // Extract `### Summary` with the SAME section boundary the other sections use
+  // (`extractSection` stops at `\n### `, `\n## `, `\n---`, or end). The shared
+  // `extractJournalSummary`'s `### Summary` pattern stops only at the next
+  // `###`/`##`/end, NOT at an HR, so a malformed/legacy Session End block that
+  // omits `### Final Bridge` and runs the Summary straight into the closing
+  // `\n---\n*Session complete*` rule would SWALLOW that rule into the summary (and
+  // the derived title). The bounded extract cuts cleanly at the HR. Fall back to
+  // `extractJournalSummary` only for the alternate summary HEADINGS it also
+  // recognizes (`## Session Summary`, `## Executive Summary`, etc.) that a plain
+  // `### Summary` extract would miss.
+  const summary = extractSection(region, "Summary") || (extractJournalSummary(region) ?? "");
   const finalBridge = extractSection(region, "Final Bridge");
   const nextActions = extractSection(region, "Next Actions");
   const tags = parseListSection(region, "Tags");
@@ -283,7 +329,7 @@ function journalToEntry(meta: JournalMeta, absoluteJournalPath: string): Rebuilt
     tags,
     refs,
     promoted: false,
-    content: renderEntryContent(sections, refs),
+    content: renderEntryContent(sections),
     isArchived: false,
   };
 
@@ -322,15 +368,25 @@ function buildCarryIndex(parsed: ParsedMemory): {
   const ingest = (entry: MemoryEntry, isArchived: boolean) => {
     const durable = durableMemoryEntryIdentity(entry);
     const sourceMatch = entry.content.match(/### Source Journal\n([^\n]+)/);
+    // Refs live in the entry BODY (`### References`) for entries the current
+    // formatter wrote (formatEntryHeading emits no `[refs:...]` token, so
+    // parseMemoryMd leaves entry.refs empty on a round-tripped current doc).
+    // OLDER entries, however, stored refs as a heading token that
+    // parseEntryHeadingTail DOES surface on entry.refs while the body has no
+    // `### References` section. Prefer the body refs, but fall back to the
+    // heading-token refs so a legacy entry's references are still forward-carried
+    // (otherwise the rebuild would drop them).
+    const bodyRefs = extractBodyRefs(entry.content);
+    const refs = bodyRefs.length > 0 ? bodyRefs : entry.refs ?? [];
     const meta: CarriedMetadata = {
       promoted: entry.promoted,
       importance: entry.importance ?? MEMORY_ENTRY_IMPORTANCE_DEFAULT,
       isArchived,
-      // Refs live in the entry BODY (`### References`), not the heading:
-      // formatEntryHeading emits no `[refs:...]` token, so parseMemoryMd leaves
-      // entry.refs empty on a round-tripped doc. Read them from the body so a
-      // forward-carry preserves the operator's actual references.
-      refs: extractBodyRefs(entry.content),
+      refs,
+      // Why / How to Apply are body-only doctrine sections (no heading token, no
+      // journal-log counterpart), so they are read from the body and carried.
+      why: extractBodySection(entry.content, "Why"),
+      howToApply: extractBodySection(entry.content, "How to Apply"),
       date: entry.date,
       title: entry.title,
       sourceJournal: sourceMatch ? sourceMatch[1].trim() : null,
@@ -478,17 +534,29 @@ export function rebuildMemoryFromJournals(
       entry.promoted = attached.promoted;
       entry.importance = attached.importance;
       entry.isArchived = attached.isArchived;
-      // Forward-carry operator-supplied references. The journal `## Session End:`
-      // block has no References section, so a rebuilt entry's refs are otherwise
-      // always [] and a commit would erase refs the operator added to MEMORY.
-      // When the carried entry has refs, adopt them AND re-render the body so the
-      // `### References` section is present in the persisted content (refs live
-      // only in the body, not the heading). When the carried entry has no refs,
-      // leave the journal-derived (empty) refs untouched.
-      if (attached.refs.length > 0) {
-        entry.refs = attached.refs;
+      // Forward-carry operator-supplied content the journal `## Session End:`
+      // block never holds: References, Why, and How to Apply. A rebuilt entry's
+      // body is otherwise journal-derived only (refs=[], no Why/How), so a commit
+      // would ERASE refs the operator added AND the doctrinal Why/How sections
+      // that `zeos_soul_promote` requires (it rejects an entry with neither, so a
+      // dropped Why/How would later make promotion fail). When the carried entry
+      // supplies ANY of them, adopt them and re-render the body in ONE pass so all
+      // three sections are present together (a per-section re-render would clobber
+      // the others, since each render rebuilds the whole body). When the carried
+      // entry supplies none, leave the journal-derived body untouched.
+      const carriedRefs = attached.refs.length > 0 ? attached.refs : undefined;
+      const carriedWhy = attached.why.length > 0 ? attached.why : undefined;
+      const carriedHow = attached.howToApply.length > 0 ? attached.howToApply : undefined;
+      if (carriedRefs || carriedWhy || carriedHow) {
+        if (carriedRefs) entry.refs = carriedRefs;
         const sections = sectionsByEntry.get(entry);
-        if (sections) entry.content = renderEntryContent(sections, attached.refs);
+        if (sections) {
+          entry.content = renderEntryContent(sections, {
+            refs: carriedRefs ?? sections.refs,
+            why: carriedWhy ?? "",
+            howToApply: carriedHow ?? "",
+          });
+        }
       }
       matchedCurrent.add(attached);
     }
@@ -569,12 +637,23 @@ export function rebuildMemoryFromJournals(
       };
   delete frontmatter.token_estimate;
 
+  // DROP the current Continuity Digest rather than carry it forward. The digest
+  // is a derived projection of the NEWEST Session End blocks (last sessions, open
+  // threads, decisions, next actions), but the rebuild regenerates the entries
+  // from the journal log and can change the newest entry, so the current digest
+  // is stale relative to the rebuilt entries. The boot path reads this digest
+  // VERBATIM from the persisted MEMORY.md (parseDigestFromMemory) to seed the next
+  // session's carry-forward; persisting a stale digest would boot agents with
+  // wrong last-session / open-thread data. It is NOT recomputed at boot, so the
+  // safe choice is to omit it: a missing digest yields no (false) carry-forward
+  // and is recomputed by the next /end or /snap from the live session. Omitting a
+  // stale projection is strictly safer than persisting misleading state.
   const rebuiltMemory: ParsedMemory = {
     frontmatter,
     projectName: opts.projectName ?? current?.projectName ?? "",
     entries: activeEntries,
     archivedEntries,
-    continuityDigest: current?.continuityDigest,
+    // continuityDigest intentionally omitted (stale; recomputed downstream).
   };
 
   curateMemory(rebuiltMemory, tokenLimit);
@@ -689,16 +768,44 @@ function buildDiff(current: ParsedMemory | null, rebuilt: ParsedMemory): string 
  *     too; unlinking AFTER opens a crash window where MEMORY is durable but the
  *     removal is not. A crash BEFORE the MEMORY write leaves the original MEMORY +
  *     archive, never a loss.
+ *
+ * Preflight (BEFORE any archive mutation): the archive step mutates the archive
+ * file (unlink in the zero case, rewrite in the non-zero case) FIRST, but the
+ * MEMORY write can still THROW afterward - atomicWriteWithBackup asserts both the
+ * new content (pre-write) and the EXISTING MEMORY file (pre-existing-target, an
+ * incident halt if a secret is already on disk), and either assert, or any I/O
+ * error, would leave the archive already mutated though nothing was committed. So
+ * we mirror those two redaction asserts up front and abort the whole commit if
+ * either fails, leaving the archive untouched. The archive is mutated only once
+ * the MEMORY write is known to pass its redaction gates.
  */
 export function commitRebuild(
   rebuilt: ParsedMemory,
   memoryPath: string,
   archivePath: string
 ): void {
+  // Compute the MEMORY content ONCE (formatMemoryMd stamps frontmatter, so a
+  // single render keeps the preflight-asserted bytes identical to the written
+  // bytes) and run the SAME redaction gates atomicWriteWithBackup will run,
+  // BEFORE touching the archive. A failure here aborts with no archive mutation.
+  const memoryContent = formatMemoryMd(rebuilt);
+  assertNoSecrets(memoryContent, "pre-write", memoryPath);
+  if (fs.existsSync(memoryPath)) {
+    const prior = fs.readFileSync(memoryPath, "utf-8");
+    assertNoSecrets(prior, "pre-existing-target", memoryPath);
+  }
+
   if (rebuilt.archivedEntries.length > 0) {
     atomicWriteFileSync(archivePath, formatMemoryMd(rebuilt, "archive"));
-  } else if (fs.existsSync(archivePath)) {
-    fs.unlinkSync(archivePath);
+  } else {
+    // Unlink the stale archive, ignoring ENOENT: existsSync-then-unlink has a
+    // TOCTOU window (the file can vanish between the check and the call, e.g. a
+    // concurrent cleanup), and a not-found archive is already the desired state.
+    try {
+      fs.unlinkSync(archivePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
   }
-  atomicWriteWithBackup(memoryPath, formatMemoryMd(rebuilt));
+  atomicWriteWithBackup(memoryPath, memoryContent);
 }
