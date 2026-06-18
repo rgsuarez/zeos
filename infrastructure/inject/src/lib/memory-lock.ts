@@ -58,8 +58,13 @@ export function acquireMemoryLock(memoryPath: string, opts: MemoryLockOptions = 
         try {
           const lockContent = fs.readFileSync(lockPath, "utf-8");
           const lockTime = new Date(lockContent.split("\n")[1]).getTime();
-          if (Date.now() - lockTime > LOCK_STALE_MS) {
-            fs.unlinkSync(lockPath); // remove stale lock
+          // A missing/garbage timestamp parses to NaN. `NaN > LOCK_STALE_MS` is
+          // false, which would wrongly treat an unreadable lock as FRESH and
+          // never reclaim it (a permanent deadlock on a corrupt lock file).
+          // Fail-safe: an unparseable timestamp is treated as STALE/reclaimable,
+          // matching the "unreadable = stale" contract of the catch below.
+          if (Number.isNaN(lockTime) || Date.now() - lockTime > LOCK_STALE_MS) {
+            fs.unlinkSync(lockPath); // remove stale/corrupt lock
             continue; // retry immediately
           }
         } catch {

@@ -121,3 +121,43 @@ test("releaseMemoryLock: releasing an already-free path is a safe no-op", () => 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- corrupt lock: an unparseable timestamp is treated as STALE -----------
+
+test("acquireMemoryLock: a lock with a garbage (unparseable) timestamp is reclaimed as stale", () => {
+  const dir = mkTmpDir();
+  try {
+    const memoryPath = path.join(dir, "MEMORY.md");
+    // A corrupt lock whose second line is not a parseable date yields NaN.
+    // `NaN > LOCK_STALE_MS` is false, so the pre-fix code would treat this as a
+    // FRESH lock and deadlock forever. The fix treats NaN as STALE/reclaimable.
+    fs.writeFileSync(`${memoryPath}.lock`, `4242\nnot-a-timestamp`, { flag: "wx" });
+
+    const [sleep, calls] = countingSleep();
+    const acquired = acquireMemoryLock(memoryPath, { sleepMs: sleep });
+    assert.equal(acquired, true, "corrupt-timestamp lock reclaimed, acquisition succeeds");
+    assert.equal(calls.count, 0, "no backoff sleep; corrupt lock reclaimed immediately as stale");
+    releaseMemoryLock(memoryPath);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("acquireMemoryLock: a lock missing the timestamp line entirely is reclaimed as stale", () => {
+  const dir = mkTmpDir();
+  try {
+    const memoryPath = path.join(dir, "MEMORY.md");
+    // Only a pid, no second line at all: split("\n")[1] is undefined -> NaN.
+    fs.writeFileSync(`${memoryPath}.lock`, `4242`, { flag: "wx" });
+
+    const [sleep] = countingSleep();
+    assert.equal(
+      acquireMemoryLock(memoryPath, { sleepMs: sleep }),
+      true,
+      "lock with no timestamp line is reclaimed as stale"
+    );
+    releaseMemoryLock(memoryPath);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
