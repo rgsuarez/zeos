@@ -1465,10 +1465,21 @@ ${formatRedactionNotice(redactions)}
             // (or the content about to be written) carries secret-shaped bytes,
             // which is an incident, not a recoverable edge: surface it loudly
             // and skip the MEMORY.md write rather than persist a leak.
+            //
+            // Crucially, this is NOT a clean rollback: the archive is written
+            // BEFORE MEMORY in the two-file move, so if curation moved entries,
+            // MEMORY_ARCHIVE.md may already hold those moved entries while
+            // MEMORY.md still holds the pre-move copy. That is a recoverable
+            // DUPLICATE (the next clean /end or curate dedups it on load via the
+            // durable Source Journal id), not data loss. Say so, so the operator
+            // does not assume the archive is untouched.
             curationMessage =
               `\nWARNING: MEMORY.md update SKIPPED, redaction assertion failed ` +
-              `(${e.count} secret-shaped value(s)). The session journal was saved; ` +
-              `inspect and clean ${memoryPath} before the next /end.`;
+              `(${e.count} secret-shaped value(s)). The session journal was saved. ` +
+              `MEMORY.md was not rewritten; if auto-curation had begun, ` +
+              `MEMORY_ARCHIVE.md may hold a recoverable DUPLICATE of moved ` +
+              `entries (state is recoverable, not lost; the next clean /end ` +
+              `dedups it). Inspect and clean ${memoryPath} before the next /end.`;
           } else {
             throw e;
           }
