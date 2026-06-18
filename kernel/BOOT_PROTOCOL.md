@@ -111,7 +111,7 @@ zeos/
 |------|---------|----------|
 | `PROFILE.md` | Identity, preferences, fleet overview | Yes |
 
-**Note:** Session journals now route to project repositories via `/project <id>`, not profiles.
+**Note:** Session journals route to the state root at `~/.zeos/journals/<app_id>/` (outside the project repo) and are scoped per project via `/project <id>`, not stored in profiles. See `infrastructure/inject/src/path-resolver.ts` (`resolveJournalPath`).
 
 ---
 
@@ -220,7 +220,9 @@ Operators who want automatic profile loading configure this in their AI platform
    - Stub file: `{date}-{sequence}-{agent}.md` (no topic slug)
    - Stub contains frontmatter with status: active (see ZEOS_MODULE_004 Section 2)
    - Stub body: placeholder text until first checkpoint
-   - COMMIT stub immediately (single-file commit)
+   - WRITE the stub file to `~/.zeos/journals/<app_id>/` (state root). The runtime
+     `writeFileSync`s the stub with exclusive-create; it does NOT git-commit it,
+     and journals are never written into the project repo.
 ```
 
 **⚠️ JOURNAL STUB REQUIREMENT (Cross-Agent Mandatory)**
@@ -254,11 +256,12 @@ previous_session: "{prior session_id}" | null
 
 ```
 ON /project <id>:
-  1. GENERATE instance ID (per Step 4.5)
-  2. DETERMINE sequence number (glob existing journals)
-  3. CREATE stub file with frontmatter + placeholder body
-  4. COMMIT stub: "session: {date}-{seq} boot stub ({instance})"
-  5. PROCEED with rest of boot sequence
+  1. DETERMINE the agent name (per Step 4.5; `instance` mirrors `agent`)
+  2. DETERMINE sequence number (glob existing journals; exclusive-create probes
+     001-999)
+  3. CREATE stub file with frontmatter + placeholder body via writeFileSync
+     (no git commit; written under ~/.zeos/journals/<app_id>/)
+  4. PROCEED with rest of boot sequence
 ```
 
 **(removed in v1.0) Branch (`` flag):**
@@ -312,10 +315,10 @@ After `/zeos` boot, the operator is in Project mode — a holding state where:
 
 To begin work, operator runs `/project <id>` which:
 - Loads project SOUL and context
-- Sets journal routing to project repo
+- Scopes journal routing to `~/.zeos/journals/<app_id>/` (state root, outside the repo)
 - Enables `/snap` and `/end`
 
-**This design ensures journals stay with their projects, not scattered across profiles.**
+**This design ensures journals are scoped per project under the state root, not scattered across profiles, and never written into the project repo (which stays byte-clean).**
 
 #### Session Journal Initialization (per ZEOS_MODULE_004)
 
@@ -371,11 +374,12 @@ change (append-only model).
 When `/project <id>` activates a project, detect other active instances:
 
 ```
-12. GENERATE Instance ID:
-    a. Extract agent name from model ID or CLI tool name
-    b. Generate 4-char hash from timestamp + PID + random bytes
-    c. Compose: {agent}-{hash4} (e.g., "claude-opus-a3f2")
-    d. Store in session context (memory only)
+12. DETERMINE the agent name:
+    a. Extract the agent name from the model ID or CLI tool name (e.g. "claude",
+       "gemini", "codex")
+    b. The runtime does NOT generate a separate {agent}-{hash4} instance ID. The
+       journal frontmatter `instance` field mirrors `agent`, and the filename
+       uses the bare agent name as its trailing component.
 
 13. PARALLEL INSTANCE DETECTION (per the runtime `checkParallelInstances`):
     a. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
@@ -389,36 +393,33 @@ When `/project <id>` activates a project, detect other active instances:
        → Include in boot output (informational, non-blocking)
 ```
 
-**Instance ID Format:**
+**Instance Identity:**
 ```
-{agent}-{hash4}
+The `instance` frontmatter field equals the bare agent name (runtime
+`createJournalStub` writes `instance: "{agent}"`). There is no hash-suffixed
+instance ID.
 
-Examples:
-  claude-opus-a3f2
-  gemini-cli-b7c1
-  codex-d9e4
-```
-
-**Parallel Instance Boot Output (when detected):**
-```
-═══════════════════════════════════════════════════════════════
-PARALLEL INSTANCES DETECTED
-═══════════════════════════════════════════════════════════════
-  ● gemini-cli (2026-01-08-007) — started 14:30, active
-  ● codex (2026-01-08-006) — started 13:15, active
-
-Your instance: claude-opus (2026-01-08-008)
-Journal: ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
-═══════════════════════════════════════════════════════════════
+Examples (agent component of the filename and the `instance` field):
+  claude
+  gemini
+  codex
 ```
 
-**Stale Instance Detection:**
+**Parallel Instance Boot Output (when detected):** the runtime emits a single
+warning block listing the active agent names for today, then proceeds
+(non-blocking). It does NOT print per-instance start times or your own instance
+line:
+```
+⚠️ PARALLEL INSTANCE DETECTION ⚠️
+Active agents on this project today: gemini, codex
+Coordinate to avoid conflicts.
+```
 
-| Last Activity | Status |
-|---------------|--------|
-| < 30 minutes | Active (shown in parallel list) |
-| 30-120 minutes | Stale (may have crashed, shown with warning) |
-| > 120 minutes | Expired (not shown, likely abandoned) |
+**Stale Instance Detection:** the current runtime has no time-based staleness
+model. `checkParallelInstances` reports every today journal that lacks a
+`## Session End:` block as active, regardless of how long ago it was last
+written; there is no 30/120-minute cutoff. A time-based stale/expired tier is an
+**Intentional-future** enhancement, not current behavior.
 
 **Behavior Rules:**
 
@@ -426,7 +427,6 @@ Journal: ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
 |-----------|----------|
 | Parallel instances found | WARN, PROCEED (non-blocking) |
 | No parallel instances | Silent (no extra output) |
-| All detected instances stale | Note: "No active parallel instances (N stale)" |
 
 **Reference:** `modules/constraints/ZEOS_MODULE_003_CONTINUITY_PROTOCOL.md` (Parallel Instance Support)
 
