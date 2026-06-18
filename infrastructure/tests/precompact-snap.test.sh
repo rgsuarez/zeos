@@ -369,6 +369,35 @@ test_c2_large_benign_output_quiet() {
   rm -rf "$tmp"
 }
 
+test_c2_lib_incomplete() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  # A sourceable-but-incomplete lib (defines no functions) must NOT fall through to
+  # calling undefined helpers; it must take the clean inline-fallback skip.
+  printf ':\n' > "$tmp/inject/bin/precompact-snap-lib.sh"
+  run_hook "$hook" "$state"
+  assert "C2.14 lib-incomplete: hook exits 0" "0" "$LAST_RC"
+  local log="$state/logs/precompact-snap.log"
+  assert_file "C2.14 lib-incomplete: inline fallback logged it" "$log"
+  [ -f "$log" ] && assert_contains "C2.14 logs lib-incomplete (helpers undefined after source)" "lib-incomplete" "$(cat "$log")"
+  rm -rf "$tmp"
+}
+
+test_c2_fifo_log_never_hangs() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  mkdir -p "$state/logs"
+  mkfifo "$state/logs/precompact-snap.log"   # a planted FIFO at the log path
+  # A snap error WOULD trigger a log append; appending to the FIFO would block the
+  # open until a reader and hang the hook. Bound the run with an alarm so a
+  # regression surfaces as a non-zero (alarm-killed) rc, not an infinite hang.
+  local rc
+  printf '{"session_id":"abc"}' | perl -e 'alarm 10; exec @ARGV' env ZEOS_PRECOMPACT_NODE="$STUB" ZEOS_STATE_ROOT="$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: error (boom)" STUB_SNAP_RC=0 "$hook" >/dev/null 2>&1
+  rc=$?
+  assert "C2.15 FIFO log target: hook exits 0 within the alarm (never hangs)" "0" "$rc"
+  rm -rf "$tmp"
+}
+
 # ── run ──────────────────────────────────────────────────────────────────────
 printf '\nzeos PreCompact auto-snap hook tests\n'
 printf '\nC1 lib unit (select_supported_node + precompact_log):\n'
@@ -393,6 +422,8 @@ test_c2_refusal_noop_logged
 test_c2_notadir_noop_logged
 test_c2_no_session_id_quiet
 test_c2_large_benign_output_quiet
+test_c2_lib_incomplete
+test_c2_fifo_log_never_hangs
 
 rm -rf "$STUB_DIR"
 

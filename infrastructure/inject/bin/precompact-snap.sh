@@ -52,6 +52,9 @@ _boot_log() {
   [ -n "$root" ] || return 0
   [ "$root" = "/.zeos" ] && return 0
   log="$root/logs/precompact-snap.log"
+  # Refuse a symlink or non-regular log target (a FIFO would hang the open),
+  # parity with precompact_log. Degrade quietly otherwise.
+  if [ -L "$log" ] || { [ -e "$log" ] && [ ! -f "$log" ]; }; then return 0; fi
   mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
   # Group-wrap the append so a late open failure is suppressed regardless of
   # redirect ordering; never block.
@@ -64,6 +67,13 @@ if [ -f "$LIB" ]; then
   . "$LIB" 2>/dev/null || { _boot_log "skip reason=lib-source-failed"; exit 0; }
 else
   _boot_log "skip reason=lib-missing"; exit 0
+fi
+# A sourceable-but-incomplete lib (empty, or truncated before the function defs)
+# passes the source check yet leaves the helpers undefined; verify both are
+# defined so the hook takes the clean inline-fallback skip instead of printing
+# `command not found` during compaction.
+if ! declare -F precompact_log >/dev/null 2>&1 || ! declare -F select_supported_node >/dev/null 2>&1; then
+  _boot_log "skip reason=lib-incomplete"; exit 0
 fi
 
 # If the server was never built, there is nothing to call - skip (logged).
@@ -131,9 +141,10 @@ OUT="$("$NODE_BIN" "$ENTRY" snap --session "$SESSION_ID" --handoff "$HANDOFF" 2>
 if [ "$rc" -eq 0 ] && grep -Eq 'zeos auto-snap: (wrote checkpoint|no-op \((no-session-id|no-active-pointer)\))' <<<"$OUT"; then
   :  # benign: clean checkpoint, or a non-zeos session (no session id / no pointer)
 else
-  # Bound the captured stderr so a pathological blob cannot write one huge log line.
+  # Bound the captured stderr to 4 KiB so a pathological blob cannot write one
+  # huge log line.
   out_log="${OUT:-<no-output>}"
-  precompact_log "snap rc=$rc ${out_log:0:4000}"
+  precompact_log "snap rc=$rc ${out_log:0:4096}"
 fi
 
 exit 0

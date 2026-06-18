@@ -67,6 +67,12 @@ precompact_log() {
   [ -n "$state_root" ] || return 0
   [ "$state_root" = "/.zeos" ] && return 0
   log="$state_root/logs/precompact-snap.log"
+  # Safe append target = a plain regular file or a not-yet-existing path. Refuse a
+  # symlink (any, including dangling) or a non-regular file (FIFO/socket/device):
+  # appending to a FIFO blocks the open until a reader and HANGS the hook (a worse
+  # never-block breach than a non-zero exit), and a symlink could redirect the
+  # write. Degrade quietly instead.
+  if [ -L "$log" ] || { [ -e "$log" ] && [ ! -f "$log" ]; }; then return 0; fi
   mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
   # Rotate-before-append so the log cannot grow without bound. Guard on existence,
   # and order `2>/dev/null` BEFORE `<"$log"` so that even if the log is removed
