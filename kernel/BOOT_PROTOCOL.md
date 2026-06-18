@@ -623,7 +623,7 @@ Before outputting boot confirmation, agent MUST verify ALL gates pass. This is n
 | G5 | CONTINUITY_PROTOCOL module loaded | File read confirmed |
 | G6 | If `/project`: App SOUL loaded | File read confirmed |
 | G7 | If App SOUL has MANDATORY BOOT SEQUENCE: ALL listed files loaded | Each file read confirmed |
-| G8 | If `/project`: Latest session journal loaded | Glob + read most recent |
+| G8 | If `/project`: Newest substantive session journal loaded | Glob + select newest substantive (unworked stubs skipped) |
 | G9 | If `/project` and `active_blueprint` set: Blueprint loaded | File read + parse confirmed |
 | G10 | If profile has `modules:` array: ALL listed modules loaded | Each file read confirmed |
 | G11 | If `/project`: agent name resolved (the bare `instance`), parallel detection complete | Agent name in context (no hash-suffixed ID is generated), scan complete |
@@ -731,7 +731,7 @@ If you cannot cite the North Star or version number, you did NOT successfully lo
 Agent MUST NOT output the boot confirmation splash screen until:
 1. All applicable gates pass
 2. All mandatory files are loaded and parsed
-3. Resume context is extracted from latest journal (if exists)
+3. Resume context is extracted from the newest substantive journal (unworked stubs skipped), if one exists
 
 **Why This Matters:**
 

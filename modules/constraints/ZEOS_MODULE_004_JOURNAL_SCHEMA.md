@@ -64,7 +64,7 @@ Intentional-future note below and the required frontmatter in Section 2.1).
 | `YYYY` | 4-digit year | ISO 8601 year | `2026` |
 | `MM` | 2-digit month | Zero-padded (01-12) | `06` |
 | `DD` | 2-digit day | Zero-padded (01-31) | `18` |
-| `NNN` | 3-digit sequence | Daily session counter (001-999) | `001` |
+| `NNN` | 3-digit sequence | Per-agent daily session counter (001-999) | `001` |
 | `<agent>` | agent identifier | Writing agent name | `claude` |
 
 ### 1.3 Naming Rules
@@ -129,7 +129,7 @@ previous_session: "YYYY-MM-DD-NNN" | null
 | `session_id` | String (quoted) | Yes | `YYYY-MM-DD-NNN`, equals the filename's date+sequence |
 | `project` | String (quoted) | Yes | The project `app_id` (empty string if unknown) |
 | `date` | String (quoted) | Yes | UTC date at session start, `YYYY-MM-DD` |
-| `sequence` | Integer (bare) | Yes | Daily session counter as a bare integer (not zero-padded, not quoted) |
+| `sequence` | Integer (bare) | Yes | Per-agent daily session counter as a bare integer (not zero-padded, not quoted) |
 | `agent` | String (quoted) | Yes | Writing agent name |
 | `instance` | String (quoted) | Yes | Instance identifier (currently mirrors `agent`) |
 | `status` | Literal `active` | Yes | Always written as `active`; never mutated (see 2.3) |
@@ -261,9 +261,11 @@ section as the session's summary for the Recent Sessions block.}
 needs to know that it cannot derive from code, git, CLAUDE.md, or MEMORY.md.}
 
 ### Next Actions
-{The concrete next steps. Non-empty Next Actions drive continuation loading: on
-the next `/project`, a non-empty `### Next Actions` here marks this completed
-session as still open, so boot also loads it as the budgeted prior journal.}
+{The concrete next steps. Non-empty Next Actions drive continuation loading: a
+non-empty `### Next Actions` here marks this session as still open, so when it is
+the newest substantive journal the next `/project` loads it verbatim as the
+latest AND additionally loads the preceding journal as the budgeted prior for
+resume context (see Section 3.5.2).}
 
 ### Tags
 {optional tags rendered as a list; omitted when not supplied}
