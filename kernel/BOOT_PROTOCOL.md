@@ -3,10 +3,10 @@ document: "BOOT_PROTOCOL"
 version: "5.6.0"
 classification: "KERNEL (IMMUTABLE)"
 created: "2024-12-14"
-updated: "2026-01-13"
+updated: "2026-06-18"
 status: "ACTIVE"
 maintained_by: "Claude (system)"
-update_reason: "Add ghost mode branch for read-only sessions ( flag)"
+update_reason: "Reconcile the embedded ZEOS_MODULE_004 restatement (Step 4 stub format, stub lifecycle, session-init frontmatter) with the append-only journal runtime, in lockstep with ZEOS_MODULE_004 v2.0.0"
 location: "kernel/BOOT_PROTOCOL.md"
 ---
 
@@ -111,7 +111,7 @@ zeos/
 |------|---------|----------|
 | `PROFILE.md` | Identity, preferences, fleet overview | Yes |
 
-**Note:** Session journals now route to project repositories via `/project <id>`, not profiles.
+**Note:** Session journals route to the state root at `~/.zeos/journals/<app_id>/` (outside the project repo) and are scoped per project via `/project <id>`, not stored in profiles. See `infrastructure/inject/src/path-resolver.ts` (`resolveJournalPath`).
 
 ---
 
@@ -217,33 +217,37 @@ Operators who want automatic profile loading configure this in their AI platform
 9. JOURNAL STUB CREATION (Immediate Visibility):
    - On `/project` load, IMMEDIATELY create journal stub file
    - Stub enables parallel instance detection BEFORE first checkpoint
-   - Stub file: `{date}-{sequence}-{agent-name}.md`
-   - Stub contains frontmatter with status: in_progress
+   - Stub file: `{date}-{sequence}-{agent}.md` (no topic slug)
+   - Stub contains frontmatter with status: active (see ZEOS_MODULE_004 Section 2)
    - Stub body: placeholder text until first checkpoint
-   - COMMIT stub immediately (single-file commit)
+   - WRITE the stub file to `~/.zeos/journals/<app_id>/` (state root). The runtime
+     `writeFileSync`s the stub with exclusive-create; it does NOT git-commit it,
+     and journals are never written into the project repo.
 ```
 
 **⚠️ JOURNAL STUB REQUIREMENT (Cross-Agent Mandatory)**
 
 When `/project <id>` loads, agent MUST create a journal stub file **immediately**, before any other work. This ensures parallel instance visibility from the moment of boot.
 
-**Stub File Format:**
+**Stub File Format (per ZEOS_MODULE_004 Section 2.1 - the runtime frontmatter):**
 
 ```yaml
 ---
-session: "{date}-{sequence}"
-instance: "{agent}-{hash4}"
-project: "{project-id}"
-agent: "{Agent Name}"
-started: "{ISO-8601-timestamp}"
-ended: null
-status: in_progress
-blueprint: "{active-blueprint-filename | null}"
+schema_version: "2.0.0"
+session_id: "{date}-{sequence}"
+project: "{app_id}"
+date: "{date}"
+sequence: {N}
+agent: "{agent}"
+instance: "{agent}"
+status: active
+created: "{ISO-8601-timestamp}"
+previous_session: "{prior session_id}" | null
 ---
 
-# Session {sequence}: [Awaiting First Checkpoint]
+# Session Journal: {date}-{sequence}
 
-*Journal stub created at boot. Content populates on first `/snap`.*
+*Session started via zeos Inject MCP*
 
 ---
 ```
@@ -252,11 +256,14 @@ blueprint: "{active-blueprint-filename | null}"
 
 ```
 ON /project <id>:
-  1. GENERATE instance ID (per Step 4.5)
-  2. DETERMINE sequence number (glob existing journals)
-  3. CREATE stub file with frontmatter + placeholder body
-  4. COMMIT stub: "session: {date}-{seq} boot stub ({instance})"
-  5. PROCEED with rest of boot sequence
+  1. DETERMINE the agent name (per Step 4.5; `instance` mirrors `agent`)
+  2. DETERMINE sequence number. The runtime probes `{date}-{NNN}-{agent}.md` for
+     NNN 001-999 and exclusive-creates the first free name, so the sequence is
+     scoped to date PLUS agent, not a single global per-day counter: each agent's
+     first session on a given date is 001
+  3. CREATE stub file with frontmatter + placeholder body via writeFileSync
+     (no git commit; written under ~/.zeos/journals/<app_id>/)
+  4. PROCEED with rest of boot sequence
 ```
 
 **(removed in v1.0) Branch (`` flag):**
@@ -284,22 +291,23 @@ Ghost mode sessions:
 - Parallel observation while another agent works
 - Investigating project state without side effects
 
-**Why Immediate Commit:**
+**Why Immediate Write:**
 
-The stub must be committed (not just written locally) so that:
-- Other instances pulling will see it
-- Parallel detection works across machines
-- Instance is visible even if session crashes before first checkpoint
+The stub is written immediately to the state root (`~/.zeos/journals/<app_id>/`,
+gitignored and never git-committed) so that:
+- Parallel detection on this machine sees the active instance from boot
+- Instance is visible even if the session crashes before its first checkpoint
+- A reused unworked stub keeps the same agent in a single file rather than spawning duplicates
 
-**Stub Lifecycle:**
+**Stub Lifecycle (append-only; frontmatter `status` stays `active` throughout):**
 
-| Event | Stub State |
+| Event | Journal State |
 |-------|------------|
-| `/project` load | Created with `status: in_progress` |
-| First `/snap` | Body replaced with actual content |
-| Subsequent checkpoints | Appended normally |
-| `/end` | Status changed to `complete` |
-| Crash (no /end) | Remains `in_progress` (stale detection) |
+| `/project` load | Created with `status: active` and `previous_session` seeded |
+| First `/snap` | A `## Checkpoint:` block is appended (body is never replaced) |
+| Subsequent checkpoints | Further `## Checkpoint:` blocks appended |
+| `/end` | A `## Session End:` block is appended; this block IS the completion marker. Frontmatter `status` is NOT flipped |
+| Crash (no /end) | No `## Session End:` block; the journal reads as interrupted (drives continuation load) |
 
 **Project mode Design:**
 
@@ -310,50 +318,58 @@ After `/zeos` boot, the operator is in Project mode — a holding state where:
 
 To begin work, operator runs `/project <id>` which:
 - Loads project SOUL and context
-- Sets journal routing to project repo
+- Scopes journal routing to `~/.zeos/journals/<app_id>/` (state root, outside the repo)
 - Enables `/snap` and `/end`
 
-**This design ensures journals stay with their projects, not scattered across profiles.**
+**This design ensures journals are scoped per project under the state root, not scattered across profiles, and never written into the project repo (which stays byte-clean).**
 
 #### Session Journal Initialization (per ZEOS_MODULE_004)
 
 When `/project <id>` activates a project:
 
-1. **Check for Existing Active Session**
-   - Scan `~/.zeos/journals/<app_id>/` for files with `status: active` or `status: paused`
-   - If found: Present option to resume or start new session
-   - If none found: Proceed to new session creation
+1. **Determine the latest prior session**
+   - Scan `~/.zeos/journals/<app_id>/` for the newest SUBSTANTIVE journal (the runtime skips unworked stubs; an interrupted-but-substantive journal still counts as latest)
+   - Use it to seed the new stub's `previous_session` and to drive continuation loading
 
-2. **Resume Existing Session**
-   - Load selected journal file
-   - Update status to `active` if previously `paused`
-   - Add resumption checkpoint
+2. **Continuation load (not a status edit)**
+   - Load the latest journal verbatim
+   - ALSO load one budgeted prior journal when the latest was interrupted (no `## Session End:` block) OR ended cleanly with open `### Next Actions`
+   - Resuming does not mutate any prior journal; journals are append-only
 
-3. **Create New Session**
-   - Generate filename: `YYYY-MM-DD-NNN-topic.md`
-   - Add frontmatter: `type`, `project`, `status`, `started`, `ended`
+3. **Create the new session stub**
+   - Generate filename: `YYYY-MM-DD-NNN-<agent>.md`
+   - Add the runtime frontmatter (Section 2.1) with `status: active` and `previous_session` seeded
    - Display confirmation
 
-**Journal File Naming (ZEOS_MODULE_004 Section 2):**
+**Journal File Naming (ZEOS_MODULE_004 Section 1):**
 ```
-YYYY-MM-DD-NNN-topic.md
+YYYY-MM-DD-NNN-<agent>.md
 
 Components:
   YYYY-MM-DD  = UTC date at session start
-  NNN         = Daily sequence number (001-999)
-  topic       = Kebab-case session topic (2-5 words)
+  NNN         = Sequence number (001-999), zero-padded, scoped per date PLUS
+                agent (each agent's first session on a date is 001)
+  <agent>     = Writing agent name (no topic slug)
 ```
 
-**Required Frontmatter (ZEOS_MODULE_004 Section 3):**
+**Required Frontmatter (ZEOS_MODULE_004 Section 2.1):**
 ```yaml
 ---
-type: session-journal
-project: <project-slug>
-status: active | completed | abandoned | paused
-started: <ISO-8601-datetime>
-ended: <ISO-8601-datetime | null>
+schema_version: "2.0.0"
+session_id: "YYYY-MM-DD-NNN"
+project: "<app_id>"
+date: "YYYY-MM-DD"
+sequence: N
+agent: "<agent>"
+instance: "<agent>"
+status: active
+created: "<ISO-8601-datetime>"
+previous_session: "YYYY-MM-DD-NNN" | null
 ---
 ```
+
+Completion is the appended `## Session End:` block, not a frontmatter `status`
+change (append-only model).
 
 **Full specification:** `modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md`
 
@@ -362,55 +378,52 @@ ended: <ISO-8601-datetime | null>
 When `/project <id>` activates a project, detect other active instances:
 
 ```
-12. GENERATE Instance ID:
-    a. Extract agent name from model ID or CLI tool name
-    b. Generate 4-char hash from timestamp + PID + random bytes
-    c. Compose: {agent}-{hash4} (e.g., "claude-opus-a3f2")
-    d. Store in session context (memory only)
+12. DETERMINE the agent name:
+    a. Extract the agent name from the model ID or CLI tool name (e.g. "claude",
+       "gemini", "codex")
+    b. The runtime does NOT generate a separate {agent}-{hash4} instance ID. The
+       journal frontmatter `instance` field mirrors `agent`, and the filename
+       uses the bare agent name as its trailing component.
 
-13. PARALLEL INSTANCE DETECTION:
+13. PARALLEL INSTANCE DETECTION (per the runtime `checkParallelInstances`):
     a. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
-    b. PARSE each journal frontmatter for:
-       - status: in_progress (indicates active session)
-       - agent: instance identifier
-       - started: timestamp
+    b. For each of today's journals:
+       - Treat it as active if it has NO `## Session End:` block (not complete)
+       - Derive the agent from the filename's trailing `-{agent}.md` component
     c. IDENTIFY parallel instances:
-       - Status = in_progress
-       - Started within last 2 hours (not stale)
+       - Active (no Session End block) today's journals
+       - The current agent's own unworked stubs are excluded (reusable self-state, not a conflict)
     d. IF parallel instances found:
        → Include in boot output (informational, non-blocking)
 ```
 
-**Instance ID Format:**
+**Instance Identity:**
 ```
-{agent}-{hash4}
+The `instance` frontmatter field equals the bare agent name (runtime
+`createJournalStub` writes `instance: "{agent}"`). There is no hash-suffixed
+instance ID.
 
-Examples:
-  claude-opus-a3f2
-  gemini-cli-b7c1
-  codex-d9e4
-```
-
-**Parallel Instance Boot Output (when detected):**
-```
-═══════════════════════════════════════════════════════════════
-PARALLEL INSTANCES DETECTED
-═══════════════════════════════════════════════════════════════
-  ● gemini-cli (2026-01-08-007) — started 14:30, active
-  ● codex (2026-01-08-006) — started 13:15, active
-
-Your instance: claude-opus (2026-01-08-008)
-Journal: ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
-═══════════════════════════════════════════════════════════════
+Examples (agent component of the filename and the `instance` field):
+  claude
+  gemini
+  codex
 ```
 
-**Stale Instance Detection:**
+**Parallel Instance Boot Output (when detected):** the runtime emits a single
+warning block listing the active agent names for today, then proceeds
+(non-blocking). It does NOT print per-instance start times or your own instance
+line:
+```
+⚠️ PARALLEL INSTANCE DETECTION ⚠️
+Active agents on this project today: gemini, codex
+Coordinate to avoid conflicts.
+```
 
-| Last Activity | Status |
-|---------------|--------|
-| < 30 minutes | Active (shown in parallel list) |
-| 30-120 minutes | Stale (may have crashed, shown with warning) |
-| > 120 minutes | Expired (not shown, likely abandoned) |
+**Stale Instance Detection:** the current runtime has no time-based staleness
+model. `checkParallelInstances` reports every today journal that lacks a
+`## Session End:` block as active, regardless of how long ago it was last
+written; there is no 30/120-minute cutoff. A time-based stale/expired tier is an
+**Intentional-future** enhancement, not current behavior.
 
 **Behavior Rules:**
 
@@ -418,7 +431,6 @@ Journal: ~/.zeos/journals/<app_id>/2026-01-08-008-claude-opus.md
 |-----------|----------|
 | Parallel instances found | WARN, PROCEED (non-blocking) |
 | No parallel instances | Silent (no extra output) |
-| All detected instances stale | Note: "No active parallel instances (N stale)" |
 
 **Reference:** `modules/constraints/ZEOS_MODULE_003_CONTINUITY_PROTOCOL.md` (Parallel Instance Support)
 
@@ -611,10 +623,10 @@ Before outputting boot confirmation, agent MUST verify ALL gates pass. This is n
 | G5 | CONTINUITY_PROTOCOL module loaded | File read confirmed |
 | G6 | If `/project`: App SOUL loaded | File read confirmed |
 | G7 | If App SOUL has MANDATORY BOOT SEQUENCE: ALL listed files loaded | Each file read confirmed |
-| G8 | If `/project`: Latest session journal loaded | Glob + read most recent |
+| G8 | If `/project`: Newest substantive session journal loaded | Glob + select newest substantive (unworked stubs skipped) |
 | G9 | If `/project` and `active_blueprint` set: Blueprint loaded | File read + parse confirmed |
 | G10 | If profile has `modules:` array: ALL listed modules loaded | Each file read confirmed |
-| G11 | If `/project`: Instance ID generated, parallel detection complete | Instance ID in context, scan complete |
+| G11 | If `/project`: agent name resolved (the bare `instance`), parallel detection complete | Agent name in context (no hash-suffixed ID is generated), scan complete |
 | G12 | If `/project`: Repo boundary detected and enforcement set | Git root resolved, enforcement level set |
 
 **Enforcement Rules with Retry Logic:**
@@ -667,7 +679,7 @@ IF profile has modules: array AND G10 fails:
     PROCEED — this is non-fatal (degraded mode)
 
 IF /project issued AND G11 fails:
-    WARN "Instance ID generation failed — parallel detection unavailable"
+    WARN "Agent name could not be resolved — parallel detection unavailable"
     PROCEED — this is non-fatal (degraded mode)
 
 IF /project issued AND G12 fails:
@@ -694,7 +706,7 @@ IF you cannot answer these questions:
 
 CORRECT ANSWERS:
 1. "One operator. Infinite leverage."
-2. "5.0.0"
+2. "5.6.0"
 3. /snap, /end, /status, /project, /zeos (any 3)
 4. [operator name from profile]
 ```
@@ -704,7 +716,7 @@ CORRECT ANSWERS:
 ```
 ✅ BOOT VALIDATION PASSED
    G1: ✅ kernel/SOUL.md loaded (North Star: "One operator. Infinite leverage.")
-   G2: ✅ kernel/BOOT_PROTOCOL.md loaded (v5.0.0)
+   G2: ✅ kernel/BOOT_PROTOCOL.md loaded (v5.6.0)
    G3: ✅ profiles/{profile}/PROFILE.md loaded (Operator: {name})
    G4: ✅ SHELL_PROTOCOL.md loaded (Commands: /snap, /end, /status)
    G5: ✅ CONTINUITY_PROTOCOL.md loaded
@@ -719,7 +731,7 @@ If you cannot cite the North Star or version number, you did NOT successfully lo
 Agent MUST NOT output the boot confirmation splash screen until:
 1. All applicable gates pass
 2. All mandatory files are loaded and parsed
-3. Resume context is extracted from latest journal (if exists)
+3. Resume context is extracted from the newest substantive journal (unworked stubs skipped), if one exists
 
 **Why This Matters:**
 
@@ -743,7 +755,8 @@ After validation, zeos determines which output flow to use based on context stat
 ```
 13. EVALUATE session context:
 
-    IF no prior sessions in profile journal:
+    IF no prior sessions in the project's state-root journal directory
+       (`~/.zeos/journals/<app_id>/`):
         → initial-boot flow (new user onboarding)
         
     ELSE IF boot triggered by app-specific command:
@@ -978,7 +991,7 @@ Blind Agents issue `REQUEST_CAPABILITY` for persistence actions. The runtime age
 
 **Security Constraint:** Credentials never leave infrastructure. Blind Agents request actions; Executors perform them. See `kernel/SECRETS_MODEL.md`.
 
-**Profile Isolation:** Agents write only to their active profile's journals unless performing cross-profile tasks approved by the Operator.
+**Journal Scoping:** Session journals are scoped per project under the state root (`~/.zeos/journals/<app_id>/`), not per profile and never inside the project repo. An agent writes to the active project's journal directory, keyed by its own agent name so concurrent agents never collide. See `infrastructure/inject/src/path-resolver.ts` (`resolveJournalPath`).
 
 **Note:** Current zeos deployments use Claude as runtime agent. This is a deployment choice, not a Kernel requirement.
 
@@ -1074,7 +1087,7 @@ When loading Profile and Modules, the boot sequence MUST validate:
 
 ---
 
-*Boot Protocol v5.5.0 — Lean boot mode*
+*Boot Protocol v5.6.0 — runtime-reconciled journal model*
 *"Kernel is law. Modules constrain. Profiles customize."*
 
 

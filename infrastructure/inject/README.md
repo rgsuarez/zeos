@@ -32,14 +32,19 @@ Inject is an MCP (Model Context Protocol) server that compiles zeos context into
 
 ### Claude Code
 
-Add to `~/.claude/settings.json`:
+Claude Code reads user-scope MCP servers from `~/.claude.json` under the
+top-level `mcpServers` key (the installer `tools/install.sh` writes this file,
+plus `~/.mcp.json` for compatibility). Do not overwrite `~/.claude.json` by
+hand - it also holds project state and history; merge the entry with the
+`claude` CLI or the installer. The entry shape:
 
 ```json
 {
   "mcpServers": {
-    "inject": {
-      "command": "node",
-      "args": ["/path/to/inject/dist/index.js"]
+    "zeos": {
+      "type": "stdio",
+      "command": "/path/to/zeos/infrastructure/inject/bin/launch",
+      "args": []
     }
   }
 }
@@ -50,9 +55,10 @@ Or create a project-local `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "inject": {
-      "command": "node",
-      "args": ["~/projects/inject/dist/index.js"]
+    "zeos": {
+      "type": "stdio",
+      "command": "~/projects/zeos/infrastructure/inject/bin/launch",
+      "args": []
     }
   }
 }
@@ -195,8 +201,9 @@ If multiple MEMORY entries share the target date and `entry_title` is not suppli
 ## Dependencies
 
 - Node.js 18+
-- zeos repository at `~/projects/zeos/`
-- Project contexts at `~/clawd/projects/`
+- zeos repository at `~/projects/zeos/` (the product: kernel, modules, infrastructure)
+- Operator state under the state root `~/.zeos/` (souls, journals, memory, roadmaps, registry, profiles), outside any repo
+- Project working trees under `~/projects/<app_id>/` (or each registry entry's `repo.clone_path`)
 
 ## License
 

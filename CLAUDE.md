@@ -104,9 +104,9 @@ Append-only logs at `~/.zeos/journals/zeos-dev/YYYY-MM-DD-NNN-<agent>.md`. Writt
 
 ### Git workflow
 
-- Branch naming: `feature/<description>` (e.g., `feature/inject-streaming`).
-- Commit format: `type(scope): description` — types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`.
-- Tags: semantic. Push to origin.
+- Branch naming: `<type>/<short-description>` using the commit types below (e.g., `feat/inject-streaming`, `fix/boot-gate`).
+- Commit format: `type(scope): description` (types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`).
+- Tags: semantic versioning. The canonical remote is rgsuarez/zeos; pushes, releases, and tags are maintainer-gated, so coordinate with the maintainer rather than pushing directly.
 
 ## Security
 

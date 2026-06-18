@@ -1,9 +1,9 @@
 ---
 protocol_id: "memory-architecture"
 protocol_type: "core"
-version: "2.0.0"
+version: "2.1.0"
 created: "2026-01-13"
-updated: "2026-02-02"
+updated: "2026-06-18"
 author: "Claude (system) per Operator directive"
 status: "active"
 authority: "Operator directive 2026-01-13"
@@ -106,7 +106,7 @@ The Memory Architecture defines:
 | **Token Budget** | 800-2,000 tokens per file |
 | **Change Frequency** | Rarely (major milestones, identity shifts) |
 | **Load Trigger** | Every boot, no exceptions |
-| **Persistence** | Git repository (version controlled) |
+| **Persistence** | State root, outside any repo: project SOUL at `~/.zeos/souls/<app_id>/SOUL.md`, MASTER_ROADMAP at `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md`, PROFILE at `~/.zeos/profiles/<operator>/PROFILE.md` (per `infrastructure/inject/src/path-resolver.ts`). The project's own `CLAUDE.md` is the only T1-adjacent file that lives in the project repo. |
 | **Owner** | Operator (requires explicit approval to modify) |
 
 **Questions Answered:**
@@ -126,7 +126,7 @@ The Memory Architecture defines:
 | Attribute | Specification |
 |-----------|---------------|
 | **Contents** | Session journals, Active blueprint, Decision logs |
-| **Token Budget** | 500-1,500 tokens (latest journal), 300-800 tokens (blueprint summary) |
+| **Token Budget** | Latest journal: verbatim, unbounded (never summarized, per `budgetPriorJournal` applying only to the prior). Prior journal (continuation): budgeted to ~800 tokens. Blueprint summary: 300-800 tokens. |
 | **Change Frequency** | Every session |
 | **Load Trigger** | Boot (latest + prior if continuation) |
 | **Persistence** | State root (`~/.zeos/journals/<app_id>/`) |
@@ -137,11 +137,17 @@ The Memory Architecture defines:
 - What's the current plan? (Blueprint)
 - What decisions were made? (Decision anchors in journals)
 
-**Loading Rules:**
-- Always load latest journal
-- If latest journal indicates "continuation," also load prior journal
-- If `active_blueprint` is set in ROADMAP, load blueprint
-- Summarize if full content exceeds token budget
+**Loading Rules (per the Inject MCP runtime, `infrastructure/inject/src/lib/journal.ts` and the boot assembler in `infrastructure/inject/src/index.ts`):**
+
+Boot renders journals through two distinct, complementary paths:
+
+- **Recent Sessions summary block (`loadMemory`).** Separately from the verbatim/continuation chain below, boot builds a `# Recent Sessions (Last 3)` block from the three newest *substantive* journals (unworked stubs skipped). Each entry is that journal's extracted summary, or a ~1,000-character fallback excerpt of its substantive body when no summary section is present. This is a condensed, multi-session glance, not a verbatim render, and it is rendered in addition to the latest/prior chain.
+- **Latest** = the newest *substantive* journal, skipping unworked stubs (`getLatestJournalMeta`). A newer interrupted-but-substantive journal is still the latest and is not shadowed by an older completed one. The latest journal is always rendered verbatim.
+- **Continuation** = also load one budgeted prior journal when the latest substantive session was **interrupted** (no `## Session End:` block) **OR** ended cleanly with non-empty `### Next Actions` (`shouldLoadPrior`). The prior is resolved via the `previous_session` link first, else the next-older substantive journal; the chain is capped at two full journals (latest + one prior).
+- If `active_blueprint` is set in ROADMAP, load blueprint.
+- The prior journal is budgeted: rendered verbatim if under budget, else summarized, else truncated. The latest is never summarized.
+
+The Recent Sessions block (summaries of the last 3) and the verbatim latest-plus-budgeted-prior chain coexist: the former gives a quick multi-session glance, the latter gives full-fidelity continuity for the immediate prior work.
 
 ---
 
@@ -176,7 +182,7 @@ The Memory Architecture defines:
 | **T1** | Project SOUL | 400-800 | 1,500 |
 | **T1** | MASTER_ROADMAP | 500-1,000 | 2,000 |
 | **T1** | PROFILE | 800-1,200 | 2,000 |
-| **T2** | Latest Journal | 500-1,000 | 1,500 |
+| **T2** | Latest Journal | verbatim (varies) | unbounded (never summarized) |
 | **T2** | Prior Journal (if continuation) | 300-500 | 800 |
 | **T2** | Active Blueprint (summary) | 300-600 | 1,000 |
 | **T3** | Working Context | Variable | Context limit |
@@ -208,7 +214,7 @@ USER OPENS CHANNEL / RUNS /project
 │  G2: Load kernel/BOOT_PROTOCOL.md                              │
 │      → Agent knows HOW TO BEHAVE (procedures)                  │
 │                                                                │
-│  G3: Load profiles/{id}/PROFILE.md                             │
+│  G3: Load ~/.zeos/profiles/{id}/PROFILE.md                     │
 │      → Agent knows WHO THE OPERATOR IS                         │
 │                                                                │
 │  G6: Load ~/.zeos/souls/{id}/SOUL.md                           │
@@ -219,7 +225,7 @@ USER OPENS CHANNEL / RUNS /project
 │                                                                │
 │  ═══ TIER 2 RECONSTRUCTION (Mid-Term) ═══                     │
 │                                                                │
-│  G8: Load latest session journal                               │
+│  G8: Load latest SUBSTANTIVE journal (+ prior if continuation) │
 │      → Agent knows WHAT HAPPENED BEFORE                        │
 │                                                                │
 │  G9: Load active blueprint (if set)                            │
@@ -227,8 +233,9 @@ USER OPENS CHANNEL / RUNS /project
 │                                                                │
 │  ═══ TIER 3 INITIALIZATION (Short-Term) ═══                   │
 │                                                                │
-│  G11: Generate instance ID                                     │
-│      → Agent has UNIQUE IDENTITY for this session              │
+│  G11: Resolve agent name (the bare `instance`)                 │
+│      → Identity is the agent name (e.g. claude), not a         │
+│        session-unique hash; `instance` mirrors `agent`         │
 │                                                                │
 │  Create journal stub                                           │
 │      → Session is VISIBLE to parallel instances                │
@@ -295,11 +302,11 @@ When multiple agents work on the same project:
 
 ### Isolated Memory
 - T3: Each agent's working context is isolated
-- Instance ID ensures journal attribution
+- The agent name (the trailing filename component and the `instance` field) attributes each journal
 
 ### Conflict Prevention
 - Protected files (ROADMAP, blueprints) use timestamp checks
-- Journal files are instance-scoped (no collision)
+- Journal files are agent-scoped via the `-<agent>.md` filename component, so concurrent agents write distinct files (no collision)
 - Git coordinates final state
 
 **Reference:** the parallel-instance protocol documentation
@@ -534,7 +541,8 @@ paths:
 |---------|------|---------|
 | 1.0.0 | 2026-01-13 | Initial protocol — three-tier model formalized |
 | 2.0.0 | 2026-02-02 | Added MEMORY.md file format, decay scores, auto-curation |
+| 2.1.0 | 2026-06-18 | Reconciled to the Inject MCP runtime: (1) Tier 2 journal loading rules - latest = newest substantive journal (stub-skipping), continuation = interrupted OR open Next Actions, via `previous_session` link, capped at two journals; (2) Tier 1 persistence location - SOUL/MASTER_ROADMAP/PROFILE live in the state root (`~/.zeos/...`, per `path-resolver.ts`), not the project repo (only the project's `CLAUDE.md` is repo-side); (3) Tier 2 token budgets - the latest journal renders verbatim and unbounded (never summarized), only the prior journal is budgeted (~800 tokens); (4) instance identity - `instance` mirrors the bare agent name and journals are agent-scoped via the `-<agent>.md` filename, not a session-unique generated ID. |
 
 ---
 
-*MEMORY_ARCHITECTURE.md v2.0.0 — "Memory is not optional. It is the innovation."*
+*MEMORY_ARCHITECTURE.md v2.1.0 - "Memory is not optional. It is the innovation."*

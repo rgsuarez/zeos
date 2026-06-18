@@ -5,8 +5,8 @@ classification: "KERNEL (IMMUTABLE)"
 lean_version_of: "kernel/BOOT_PROTOCOL.md"
 full_protocol_uri: "zeos://protocols/boot"
 token_limit: "≤1,500 tokens"
-updated: "2026-01-20"
-update_reason: "Claude native integration - command prefix migration from ! to /"
+updated: "2026-06-18"
+update_reason: "Reconcile the lean Step 4.5 instance-ID line to the runtime bare-agent model (instance mirrors agent; no {agent}-{hash4} suffix), matching the full BOOT_PROTOCOL"
 ---
 
 # zeos Boot Protocol — Skeleton v5.7.0
@@ -66,7 +66,7 @@ PROFILE (Layer 2) — Operator Context
 - On `/project <id>`: Create journal stub immediately, enable journaling
 
 **Step 4.5:** Parallel Instance Detection
-- Generate instance ID: {agent}-{hash4}
+- Instance ID is the bare agent name (the `instance` frontmatter mirrors `agent`; no hash suffix)
 - Scan ~/.zeos/journals/<app_id>/ for parallel instances
 
 **Step 4.6:** Repo Boundary Detection (git root, enforcement level)
