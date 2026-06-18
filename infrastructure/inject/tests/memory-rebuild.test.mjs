@@ -1093,3 +1093,303 @@ test("rebuild finding-8: title uses titleFromSummary parity (skips a leading hea
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── P2 residual data-safety fixes ────────────────────────────────────────────
+
+// Fix 1: `### Why` and `### How to Apply` are authored ONLY into the current
+// MEMORY entry (the /end flow), never into the journal Session End block, so they
+// must be FORWARD-CARRIED. A rebuild that dropped them would erase doctrinal
+// content that zeos_soul_promote requires (it rejects an entry with neither), so
+// a later promotion would fail.
+test("rebuild fix-1: an entry's Why / How to Apply survive the rebuild (forward-carried doctrine)", () => {
+  const dir = mkTmpDir();
+  try {
+    // The journal has NO Why/How sections (mirrors real /end output).
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "doctrine note" })]);
+
+    // Current MEMORY entry carries operator/agent-authored Why + How to Apply.
+    const seq = "001";
+    const journalPath = path.join(dir, `2026-06-10-${seq}-claude.md`);
+    const whyText = "the durable reason this decision holds";
+    const howText = "apply it by checking the gate before every write";
+    const withDoctrineContent = [
+      "### Summary", "doctrine note", "",
+      "### Why", whyText, "",
+      "### How to Apply", howText, "",
+      "### Final Bridge", "b", "",
+      "### Next Actions", "- n", "",
+      "### Source Journal", journalPath,
+    ].join("\n");
+    const current = currentMemoryDoc("demo", [
+      { date: "2026-06-10", title: "doctrine note", decay: 5, importance: 3, tags: [], refs: [], promoted: false, content: withDoctrineContent, isArchived: false },
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+
+    const entry = result.rebuilt.entries.find(e => e.title === "doctrine note");
+    assert.ok(entry, "entry present after rebuild");
+    assert.match(entry.content, /### Why\nthe durable reason this decision holds/, "Why section forward-carried into the body");
+    assert.match(entry.content, /### How to Apply\napply it by checking the gate before every write/, "How to Apply forward-carried into the body");
+
+    // Round-trip: both survive a full format/parse cycle.
+    const reparsed = parseMemoryMd(formatMemoryMd(result.rebuilt));
+    const reEntry = reparsed.entries.find(e => e.title === "doctrine note");
+    assert.match(reEntry.content, /### Why\nthe durable reason/, "Why persists through format/parse");
+    assert.match(reEntry.content, /### How to Apply\napply it by/, "How to Apply persists through format/parse");
+
+    // The promotion path reads these sections back and REQUIRES at least one; the
+    // rebuilt entry must still satisfy that (it would have rejected with both empty).
+    const whyMatch = reEntry.content.match(/### Why\n([\s\S]*?)(?=\n### |$)/);
+    const howMatch = reEntry.content.match(/### How to Apply\n([\s\S]*?)(?=\n### |$)/);
+    assert.equal(whyMatch && whyMatch[1].trim(), whyText, "Why extractable for promotion");
+    assert.equal(howMatch && howMatch[1].trim(), howText, "How to Apply extractable for promotion");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Fix 1 (boundary): forward-carried Why/How and forward-carried References must
+// COEXIST in the rebuilt body. The body is rebuilt in one pass, so carrying one
+// must not clobber the others.
+test("rebuild fix-1: Why / How to Apply / References are all carried together (single re-render)", () => {
+  const dir = mkTmpDir();
+  try {
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "combined doctrine" })]);
+    const journalPath = path.join(dir, "2026-06-10-001-claude.md");
+    const content = [
+      "### Summary", "combined doctrine", "",
+      "### Why", "why-A", "",
+      "### How to Apply", "how-B", "",
+      "### Final Bridge", "b", "",
+      "### Next Actions", "- n", "",
+      "### References", "- LQOS-7", "",
+      "### Source Journal", journalPath,
+    ].join("\n");
+    const current = currentMemoryDoc("demo", [
+      { date: "2026-06-10", title: "combined doctrine", decay: 5, importance: 3, tags: [], refs: ["LQOS-7"], promoted: false, content, isArchived: false },
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+    const entry = result.rebuilt.entries.find(e => e.title === "combined doctrine");
+    assert.ok(entry, "entry present");
+    assert.match(entry.content, /### Why\nwhy-A/, "Why present");
+    assert.match(entry.content, /### How to Apply\nhow-B/, "How to Apply present");
+    assert.match(entry.content, /### References\n- LQOS-7/, "References present");
+    assert.deepEqual(entry.refs, ["LQOS-7"], "refs carried alongside doctrine");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Fix 2: commitRebuild must PREFLIGHT the MEMORY redaction gates BEFORE mutating
+// the archive. A pre-existing MEMORY.md carrying a secret-shaped value makes
+// atomicWriteWithBackup throw (pre-existing-target); without the preflight the
+// archive would ALREADY be unlinked/rewritten by then. With the preflight the
+// commit aborts with the archive UNCHANGED.
+test("rebuild fix-2: a pre-existing MEMORY with a secret aborts commit with the archive UNCHANGED", async () => {
+  const { acquireMemoryLock, releaseMemoryLock } = await import("../dist/lib/memory-lock.js");
+  const { RedactionAssertionError } = await import("../dist/lib/atomic-write.js");
+
+  const journalDir = mkTmpDir("memory-rebuild-j-");
+  const stateRoot = mkTmpDir("memory-rebuild-s-");
+  try {
+    // One reproducible active journal -> the rebuild has ZERO archived entries,
+    // so the commit's zero-archive branch would UNLINK the stale archive.
+    seedJournals(journalDir, [journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: "live entry" })]);
+    const memDir = path.join(stateRoot, "memory", "preflight");
+    fs.mkdirSync(memDir, { recursive: true });
+    const memoryPath = path.join(memDir, "MEMORY.md");
+    const archivePath = path.join(memDir, "MEMORY_ARCHIVE.md");
+
+    // A pre-existing MEMORY.md whose body carries a secret-shaped value, built at
+    // runtime so no literal secret sits in source. The ENV_SECRET rule matches a
+    // `token: <20+ alnum>` assignment.
+    const secretValue = "z" + "Ab12Cd34".repeat(5); // 41 alnum chars
+    const leakedMemory = [
+      "---", 'document: "MEMORY"', "---", "",
+      "# Project Memory: preflight", "",
+      "## 2026-06-12: live entry [decay:12] [importance:3]", "",
+      "### Summary", "live entry", "",
+      "### Final Bridge", `leaked token: ${secretValue}`, "",
+      "### Next Actions", "- n", "",
+      "### Source Journal", path.join(journalDir, "2026-06-12-001-claude.md"), "",
+      "---", "",
+    ].join("\n");
+    fs.writeFileSync(memoryPath, leakedMemory);
+
+    // A stale archive that the zero-archive commit path would otherwise remove.
+    const archive = currentArchiveDoc("preflight", [
+      memoryEntry(journalDir, { date: "2026-06-08", seq: 8, title: "long-gone", importance: 2, isArchived: true }),
+    ]);
+    fs.writeFileSync(archivePath, archive);
+    const archiveBytesBefore = fs.readFileSync(archivePath, "utf-8");
+
+    const currentMemory = fs.readFileSync(memoryPath, "utf-8");
+    const currentArchive = fs.readFileSync(archivePath, "utf-8");
+    const result = rebuildMemoryFromJournals(journalDir, {
+      tokenLimit: 100000, currentMemory, currentArchive, projectName: "preflight",
+    });
+    assert.equal(result.rebuilt.archivedEntries.length, 0, "rebuild has zero archived entries (zero-archive path)");
+    assert.equal(result.canCommit, true);
+
+    acquireMemoryLock(memoryPath);
+    try {
+      assert.throws(
+        () => commitRebuild(result.rebuilt, memoryPath, archivePath),
+        RedactionAssertionError,
+        "commit aborts on the pre-existing secret",
+      );
+    } finally {
+      releaseMemoryLock(memoryPath);
+    }
+
+    // The archive was NOT mutated: the preflight ran before the unlink.
+    assert.equal(fs.existsSync(archivePath), true, "MEMORY_ARCHIVE.md still exists (not unlinked)");
+    assert.equal(fs.readFileSync(archivePath, "utf-8"), archiveBytesBefore, "MEMORY_ARCHIVE.md bytes unchanged");
+  } finally {
+    fs.rmSync(journalDir, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
+// Fix 3: the current Continuity Digest is a projection of the NEWEST Session End
+// blocks; a rebuild can change the newest entry, so the stale digest must NOT be
+// carried forward (the boot path reads it verbatim to seed carry-forward). It is
+// dropped so the next /end recomputes it.
+test("rebuild fix-3: a stale Continuity Digest is dropped (not carried forward)", () => {
+  const dir = mkTmpDir();
+  try {
+    // Two journals; the rebuild regenerates entries from the journal log.
+    seedJournals(dir, [
+      journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "older work" }),
+      journalWithSessionEnd({ date: "2026-06-11", seq: 1, summary: "newest work changed" }),
+    ]);
+
+    // Current MEMORY carries a Continuity Digest referencing a DIFFERENT newest
+    // session than the rebuild will produce (stale relative to the rebuilt set).
+    const current = [
+      "---", 'document: "MEMORY"', "---", "",
+      "# Project Memory: demo", "",
+      "## Continuity Digest", "",
+      "### Last 3 Sessions", "- 2026-06-09: STALE prior session summary", "",
+      "### Open Threads", "- [ ] STALE open thread that no longer applies", "",
+      "### Decisions/Constraints", "*None this session*", "",
+      "### Next Actions", "*None specified*", "",
+      "---", "",
+    ].join("\n");
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+
+    // The rebuilt parsed memory carries no digest...
+    assert.equal(result.rebuilt.continuityDigest, undefined, "stale digest not retained on the rebuilt memory");
+    // ...and the formatted/committed doc has no stale digest content.
+    const formatted = formatMemoryMd(result.rebuilt);
+    assert.doesNotMatch(formatted, /STALE prior session summary/, "stale last-session line not persisted");
+    assert.doesNotMatch(formatted, /STALE open thread/, "stale open-thread line not persisted");
+    assert.doesNotMatch(formatted, /## Continuity Digest/, "no Continuity Digest block persisted");
+
+    // Re-parsing the committed doc surfaces no digest, so a boot would seed no
+    // (false) carry-forward from it.
+    const reparsed = parseMemoryMd(formatted);
+    assert.equal(reparsed.continuityDigest, undefined, "no digest survives the commit round-trip");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Fix 4: an older entry that stored its References as a HEADING token
+// (`[refs:...]`, which parseEntryHeadingTail surfaces on entry.refs while the body
+// has no `### References` section) must still forward-carry its refs. The carry
+// index falls back to entry.refs when the body has none.
+test("rebuild fix-4: legacy refs stored in the heading token are forward-carried", () => {
+  const dir = mkTmpDir();
+  try {
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "legacy heading refs" })]);
+    const journalPath = path.join(dir, "2026-06-10-001-claude.md");
+
+    // A current MEMORY doc whose entry carries refs ONLY in the heading token and
+    // has NO `### References` body section (the legacy persistence shape).
+    const current = [
+      "---", 'document: "MEMORY"', "---", "",
+      "# Project Memory: demo", "",
+      "## 2026-06-10: legacy heading refs [decay:5] [importance:3] [refs:LQOS-99,https://x.test/d]", "",
+      "### Summary", "legacy heading refs", "",
+      "### Final Bridge", "b", "",
+      "### Next Actions", "- n", "",
+      "### Source Journal", journalPath, "",
+      "---", "",
+    ].join("\n");
+
+    // Sanity: the current doc really stores refs in the heading, not the body.
+    const parsedCurrent = parseMemoryMd(current);
+    assert.deepEqual(parsedCurrent.entries[0].refs, ["LQOS-99", "https://x.test/d"], "current refs come from the heading token");
+    assert.doesNotMatch(parsedCurrent.entries[0].content, /### References/, "current body has no References section");
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+
+    const entry = result.rebuilt.entries.find(e => e.title === "legacy heading refs");
+    assert.ok(entry, "entry present after rebuild");
+    assert.deepEqual(entry.refs, ["LQOS-99", "https://x.test/d"], "legacy heading refs forward-carried");
+    assert.match(entry.content, /### References\n- LQOS-99\n- https:\/\/x\.test\/d/, "refs materialized into the rebuilt body");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Fix 5: a malformed/legacy Session End block that OMITS `### Final Bridge` runs
+// the Summary straight into the closing `\n---\n*Session complete*` rule. The
+// summary (and derived title) must stop at the HR, not swallow the rule. The
+// bounded `### Summary` extract (stops at `\n---`) replaces the shared
+// extractJournalSummary `### Summary` pattern that stops only at the next heading.
+test("rebuild fix-5: a Summary followed by the closing rule (no Final Bridge) is not swallowed", () => {
+  const dir = mkTmpDir();
+  try {
+    const filename = "2026-06-10-001-claude.md";
+    const content = [
+      "---",
+      'schema_version: "2.0.0"',
+      'session_id: "2026-06-10-001"',
+      'project: "demo"',
+      'date: "2026-06-10"',
+      "sequence: 1",
+      'agent: "claude"',
+      "status: active",
+      'created: "2026-06-10T12:00:00.000Z"',
+      "previous_session: null",
+      "---",
+      "",
+      "# Session Journal: 2026-06-10-001",
+      "",
+      "## Worked on a real substantive body to clear the unworked-stub filter with",
+      "padding padding padding padding padding padding padding padding padding text.",
+      "",
+      "## Session End: 2026-06-10T18:00:00.000Z",
+      "",
+      "### Summary",
+      "the clean summary with no trailing rule",
+      // NO ### Final Bridge: the Summary is immediately followed by the closing rule.
+      "",
+      "---",
+      "*Session complete*",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(dir, filename), content);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000 });
+    const entry = result.rebuilt.entries[0];
+
+    assert.equal(entry.title, "the clean summary with no trailing rule", "title is the clean summary line");
+    assert.doesNotMatch(entry.title, /Session complete/, "title does not swallow the closing marker");
+    assert.doesNotMatch(entry.title, /---/, "title does not swallow the HR");
+
+    // The rendered body must not contain the swallowed closing rule anywhere. The
+    // shared extractJournalSummary `### Summary` pattern (which stops only at the
+    // next heading) would fold `\n---\n*Session complete*` INTO the summary, and
+    // formatMemoryEntryContent would then emit it inside the `### Summary` body.
+    // The bounded extract cuts at the HR, so the marker never reaches the body.
+    assert.doesNotMatch(entry.content, /Session complete/, "rendered body does not contain the swallowed closing marker");
+    assert.match(entry.content, /### Summary\nthe clean summary with no trailing rule\n/, "Summary section holds only the clean line");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
