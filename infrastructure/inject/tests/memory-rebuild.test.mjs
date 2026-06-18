@@ -4,12 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { rebuildMemoryFromJournals } from "../dist/lib/memory-rebuild.js";
+import { rebuildMemoryFromJournals, commitRebuild } from "../dist/lib/memory-rebuild.js";
 import {
   parseMemoryMd,
   formatMemoryMd,
   formatEntryHeading,
   MEMORY_ENTRY_DECAY_DEFAULT,
+  MEMORY_PROMOTION_IMPORTANCE_THRESHOLD,
 } from "../dist/lib/memory.js";
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -496,7 +497,6 @@ test("rebuild commit path: a stale MEMORY_ARCHIVE.md is removed when the rebuild
   // live active entry and produces ZERO archived entries. The commit must remove
   // the stale archive so the dropped entry cannot resurrect via dedupe-on-load.
   const { acquireMemoryLock, releaseMemoryLock } = await import("../dist/lib/memory-lock.js");
-  const { atomicWriteWithBackup, atomicWriteFileSync } = await import("../dist/lib/atomic-write.js");
 
   const journalDir = mkTmpDir("memory-rebuild-j-");
   const stateRoot = mkTmpDir("memory-rebuild-s-");
@@ -528,17 +528,12 @@ test("rebuild commit path: a stale MEMORY_ARCHIVE.md is removed when the rebuild
     assert.equal(result.rebuilt.archivedEntries.length, 0, "rebuild has no archived entries");
     assert.ok(result.unrecoverable.some(u => u.title === "long-gone archived"));
 
-    // Mirror the handler's commit ordering, including the stale-archive cleanup.
+    // Use the real handler write path (commitRebuild), which removes the stale
+    // archive in the zero-archive case as part of its crash-safe ordering.
     fs.mkdirSync(memDir, { recursive: true });
     acquireMemoryLock(memoryPath);
     try {
-      if (result.rebuilt.archivedEntries.length > 0) {
-        atomicWriteFileSync(archivePath, formatMemoryMd(result.rebuilt, "archive"));
-      }
-      atomicWriteWithBackup(memoryPath, formatMemoryMd(result.rebuilt));
-      if (result.rebuilt.archivedEntries.length === 0 && fs.existsSync(archivePath)) {
-        fs.unlinkSync(archivePath);
-      }
+      commitRebuild(result.rebuilt, memoryPath, archivePath);
     } finally {
       releaseMemoryLock(memoryPath);
     }
@@ -564,6 +559,536 @@ test("rebuild: empty journal dir yields zero entries and is committable", () => 
     assert.equal(result.journalEntryCount, 0);
     assert.equal(result.rebuilt.entries.length, 0);
     assert.equal(result.canCommit, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// -- Data-integrity remediation (PR review panel findings) --------------------
+
+// Finding 1: ARCHIVE-ONLY forward-carry must NOT be bypassed. When MEMORY.md is
+// empty/missing but MEMORY_ARCHIVE.md holds a promoted entry the rebuild cannot
+// reproduce, the commit must FAIL CLOSED exactly like the active-only case
+// (previously the empty-MEMORY guard skipped the carry index and canCommit
+// stayed true, silently dropping the promotion marker).
+test("rebuild finding-1: archive-only promoted entry the rebuild cannot reproduce FAILS CLOSED (empty MEMORY)", () => {
+  const dir = mkTmpDir();
+  try {
+    // The only journal on disk is unrelated; the promoted entry's journal (seq 9)
+    // is gone, so the rebuild cannot reproduce it.
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: "unrelated work" })]);
+
+    // MEMORY.md is EMPTY; the promoted entry lives ONLY in the archive.
+    const archive = currentArchiveDoc("demo", [
+      memoryEntry(dir, { date: "2026-06-10", seq: 9, title: "archived promoted decision", importance: 5, promoted: true, isArchived: true }),
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, {
+      tokenLimit: 100000,
+      currentMemory: "",        // empty MEMORY.md (the recovery scenario)
+      currentArchive: archive,  // promoted entry survives only here
+    });
+
+    assert.equal(result.canCommit, false, "archive-only promoted would-drop must block commit");
+    assert.ok(
+      result.conflicts.some(c => c.kind === "dropped-promoted" && c.title === "archived promoted decision"),
+      "the archive-only promoted entry is reported as a dropped-promoted conflict",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("rebuild finding-1: archive-only commit aborts and writes nothing (handler shape)", async () => {
+  // Mirrors the handler's commit gate: when canCommit is false, NOTHING is
+  // written to disk. With MEMORY.md empty and a promoted entry only in the
+  // archive whose journal is gone, the commit must abort before any write.
+  const { acquireMemoryLock, releaseMemoryLock } = await import("../dist/lib/memory-lock.js");
+
+  const journalDir = mkTmpDir("memory-rebuild-j-");
+  const stateRoot = mkTmpDir("memory-rebuild-s-");
+  try {
+    seedJournals(journalDir, [journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: "unrelated work" })]);
+    const memDir = path.join(stateRoot, "memory", "arch-only");
+    fs.mkdirSync(memDir, { recursive: true });
+    const memoryPath = path.join(memDir, "MEMORY.md");
+    const archivePath = path.join(memDir, "MEMORY_ARCHIVE.md");
+
+    // No MEMORY.md on disk; archive holds a promoted entry whose journal is gone.
+    const archive = currentArchiveDoc("arch-only", [
+      memoryEntry(journalDir, { date: "2026-06-10", seq: 9, title: "archived promoted", importance: 5, promoted: true, isArchived: true }),
+    ]);
+    fs.writeFileSync(archivePath, archive);
+    const archiveBytesBefore = fs.readFileSync(archivePath, "utf-8");
+
+    const currentMemory = fs.existsSync(memoryPath) ? fs.readFileSync(memoryPath, "utf-8") : "";
+    const currentArchive = fs.existsSync(archivePath) ? fs.readFileSync(archivePath, "utf-8") : "";
+
+    acquireMemoryLock(memoryPath);
+    try {
+      const result = rebuildMemoryFromJournals(journalDir, {
+        tokenLimit: 100000,
+        currentMemory,
+        currentArchive,
+        projectName: "arch-only",
+      });
+      // The handler refuses to write when canCommit is false. Only on a
+      // committable rebuild would it call the real commitRebuild write path.
+      assert.equal(result.canCommit, false, "archive-only would-drop blocks the commit");
+      if (result.canCommit) {
+        commitRebuild(result.rebuilt, memoryPath, archivePath); // (unreached here)
+      }
+    } finally {
+      releaseMemoryLock(memoryPath);
+    }
+
+    assert.equal(fs.existsSync(memoryPath), false, "no MEMORY.md written on a fail-closed commit");
+    assert.equal(fs.readFileSync(archivePath, "utf-8"), archiveBytesBefore, "archive untouched on a fail-closed commit");
+  } finally {
+    fs.rmSync(journalDir, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test("rebuild finding-1: archive placement + promoted forward-carry work in the archive-only case", () => {
+  // Positive case: MEMORY.md empty, but the archive holds a promoted entry whose
+  // journal IS still on disk. The rebuild reproduces it, forward-carries promoted
+  // + archive placement from the archive-only current state, and commits cleanly.
+  const dir = mkTmpDir();
+  try {
+    seedJournals(dir, [
+      journalWithSessionEnd({ date: "2026-06-11", seq: 1, summary: "live active work" }),
+      journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "cold promoted work" }),
+    ]);
+
+    // MEMORY.md empty; both current facts live in the archive (placement to carry).
+    const archive = currentArchiveDoc("demo", [
+      memoryEntry(dir, { date: "2026-06-11", seq: 1, title: "live active work", importance: 3, isArchived: true }),
+      memoryEntry(dir, { date: "2026-06-10", seq: 1, title: "cold promoted work", importance: 2, promoted: true, isArchived: true }),
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, {
+      tokenLimit: 100000,
+      currentMemory: "",
+      currentArchive: archive,
+    });
+
+    assert.equal(result.canCommit, true, "reproducible archive-only entries commit cleanly");
+
+    // The promoted archive entry forward-carries its marker even though MEMORY
+    // was empty (the carry index ran off the archive). It is also rescued to the
+    // active set because a promoted entry must never stay archived.
+    const promoted = [...result.rebuilt.entries, ...result.rebuilt.archivedEntries]
+      .find(e => e.title === "cold promoted work");
+    assert.ok(promoted, "promoted archive-only entry is present after rebuild");
+    assert.equal(promoted.promoted, true, "promoted marker forward-carried from the archive-only current state");
+
+    // Provenance shows a durable match happened (carry index built from archive).
+    const prov = result.provenance.find(p => p.title === "cold promoted work");
+    assert.equal(prov.carry, "durable", "archive-only entry matched by durable id");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 2: the date+title fallback must be unique across ALL current entries
+// (durable-keyed + legacy), not just among legacy entries. A legacy entry that
+// shares a date+title with a DURABLE-keyed current entry is ambiguous and must
+// NOT attach to a rebuilt entry whose durable id belongs to the OTHER entry.
+test("rebuild finding-2: legacy metadata does NOT mis-attach when a durable-keyed entry shares its date+title", () => {
+  const dir = mkTmpDir();
+  try {
+    // One journal on disk: seq 1, title "shared title". Its rebuilt entry has a
+    // durable id = journal::<dir>/2026-06-10-001-claude.md.
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "shared title" })]);
+
+    // Current MEMORY has TWO entries sharing date "2026-06-10" + title "shared title":
+    //   A) a DURABLE-keyed entry pointing at a DIFFERENT journal (seq 2, not on
+    //      disk) -> rebuilt entry's durable id will NOT match this one.
+    //   B) a LEGACY entry (no Source Journal line) with distinctive importance 5.
+    // The rebuilt entry (durable id for seq 1) misses on durable, then must NOT
+    // adopt B via the date+title fallback because the key is ambiguous across the
+    // full current set (A also holds it).
+    const durableSibling = memoryEntry(dir, { date: "2026-06-10", seq: 2, title: "shared title", importance: 4 });
+    const legacyContent = ["### Summary", "shared title", "", "### Final Bridge", "b", "", "### Next Actions", "- n"].join("\n");
+    const legacy = { date: "2026-06-10", title: "shared title", decay: 9, importance: 5, tags: [], refs: [], promoted: false, content: legacyContent, isArchived: false };
+    const current = currentMemoryDoc("demo", [durableSibling, legacy]);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+
+    const rebuiltEntry = result.rebuilt.entries.find(e => e.title === "shared title");
+    assert.ok(rebuiltEntry, "the rebuilt entry exists");
+    assert.equal(rebuiltEntry.importance, 3, "ambiguous legacy importance must NOT attach (no mis-attach)");
+    const prov = result.provenance.find(p => p.title === "shared title");
+    assert.equal(prov.carry, "none", "no fallback carry when the date+title is ambiguous across ALL current entries");
+
+    // The durable-keyed sibling (A) and the legacy entry (B) both went unmatched.
+    // Neither was promoted/pinned-by-promotion at a level that blocks commit here:
+    // A has importance 4 (>= threshold) so it is reported as a dropped-pinned
+    // conflict (its metadata was not silently lost - it is surfaced).
+    assert.ok(
+      result.conflicts.some(c => c.kind === "dropped-pinned" && c.title === "shared title"),
+      "the unmatched durable-keyed sibling is surfaced as a conflict, not silently dropped",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 3: in the zero-archive path the stale archive unlink must PRECEDE the
+// MEMORY write (so the parent-dir fsync of the MEMORY rename durably commits the
+// removal), while the non-zero path keeps archive-first ordering. Exercises the
+// REAL commitRebuild helper (the single source of truth for write ordering),
+// not a test-local copy, so a future reorder is caught.
+test("rebuild finding-3: zero-archive commitRebuild removes the stale archive (no resurrection)", async () => {
+  const { acquireMemoryLock, releaseMemoryLock } = await import("../dist/lib/memory-lock.js");
+
+  const journalDir = mkTmpDir("memory-rebuild-j-");
+  const stateRoot = mkTmpDir("memory-rebuild-s-");
+  try {
+    seedJournals(journalDir, [journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: "live entry" })]);
+    const memDir = path.join(stateRoot, "memory", "ordering");
+    fs.mkdirSync(memDir, { recursive: true });
+    const memoryPath = path.join(memDir, "MEMORY.md");
+    const archivePath = path.join(memDir, "MEMORY_ARCHIVE.md");
+
+    const current = currentMemoryDoc("ordering", [
+      memoryEntry(journalDir, { date: "2026-06-12", seq: 1, title: "live entry", importance: 3 }),
+    ]);
+    // Stale archive: journal seq 8 gone, importance 2 (not pinned) -> rebuild
+    // produces zero archived entries.
+    const archive = currentArchiveDoc("ordering", [
+      memoryEntry(journalDir, { date: "2026-06-08", seq: 8, title: "long-gone archived", importance: 2, isArchived: true }),
+    ]);
+    fs.writeFileSync(memoryPath, current);
+    fs.writeFileSync(archivePath, archive);
+
+    const result = rebuildMemoryFromJournals(journalDir, {
+      tokenLimit: 100000, currentMemory: current, currentArchive: archive, projectName: "ordering",
+    });
+    assert.equal(result.rebuilt.archivedEntries.length, 0, "rebuild has zero archived entries");
+    assert.equal(result.canCommit, true);
+
+    acquireMemoryLock(memoryPath);
+    try {
+      commitRebuild(result.rebuilt, memoryPath, archivePath);
+    } finally {
+      releaseMemoryLock(memoryPath);
+    }
+
+    assert.equal(fs.existsSync(archivePath), false, "stale archive removed by commitRebuild");
+    assert.ok(fs.existsSync(memoryPath), "MEMORY.md written by commitRebuild");
+    // Happy path: reloading MEMORY + (absent) archive yields only the live entry,
+    // i.e. the dropped archived entry does NOT resurrect via dedupe-on-load.
+    const reloaded = parseMemoryMd(fs.readFileSync(memoryPath, "utf-8"), "");
+    const titles = [...reloaded.entries, ...reloaded.archivedEntries].map(e => e.title);
+    assert.deepEqual(titles, ["live entry"], "dropped archived entry does not resurrect");
+  } finally {
+    fs.rmSync(journalDir, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
+// Finding 3 (non-zero archive): commitRebuild keeps archive-first ordering and
+// writes BOTH files (the complement of the zero-archive stale-removal path).
+test("rebuild finding-3: non-zero-archive commitRebuild writes both MEMORY and the archive", async () => {
+  const journalDir = mkTmpDir("memory-rebuild-j-");
+  const stateRoot = mkTmpDir("memory-rebuild-s-");
+  try {
+    // Two reproducible journals; force one into the archive via the token limit.
+    const big = "word ".repeat(400).trim();
+    seedJournals(journalDir, [
+      journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: `active big ${big}` }),
+      journalWithSessionEnd({ date: "2026-06-08", seq: 1, summary: `older big ${big}` }),
+    ]);
+    const memDir = path.join(stateRoot, "memory", "nonzero");
+    fs.mkdirSync(memDir, { recursive: true });
+    const memoryPath = path.join(memDir, "MEMORY.md");
+    const archivePath = path.join(memDir, "MEMORY_ARCHIVE.md");
+
+    const result = rebuildMemoryFromJournals(journalDir, {
+      tokenLimit: 500, currentMemory: "", projectName: "nonzero",
+    });
+    assert.ok(result.rebuilt.archivedEntries.length > 0, "rebuild produced archived entries");
+    assert.equal(result.canCommit, true);
+
+    commitRebuild(result.rebuilt, memoryPath, archivePath);
+
+    assert.ok(fs.existsSync(memoryPath), "MEMORY.md written");
+    assert.ok(fs.existsSync(archivePath), "MEMORY_ARCHIVE.md written (archive-first, not removed)");
+    // Reload both: every rebuilt entry is present across active+archive.
+    const reloaded = parseMemoryMd(fs.readFileSync(memoryPath, "utf-8"), fs.readFileSync(archivePath, "utf-8"));
+    assert.equal(reloaded.entries.length + reloaded.archivedEntries.length, 2, "both entries persisted");
+  } finally {
+    fs.rmSync(journalDir, { recursive: true, force: true });
+    fs.rmSync(stateRoot, { recursive: true, force: true });
+  }
+});
+
+// Finding 4: operator-supplied References must be FORWARD-CARRIED from the
+// current MEMORY entry (the journal Session End block has no References section,
+// so a rebuild would otherwise rewrite the entry with refs=[]).
+test("rebuild finding-4: an existing entry's References survive the rebuild (forward-carried, not journal-derived)", () => {
+  const dir = mkTmpDir();
+  try {
+    // The journal has NO References section (mirrors real /end output).
+    seedJournals(dir, [journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "work with refs" })]);
+
+    // Current MEMORY entry carries operator-supplied refs the journal never had.
+    const seq = "001";
+    const journalPath = path.join(dir, `2026-06-10-${seq}-claude.md`);
+    const withRefsContent = [
+      "### Summary", "work with refs", "",
+      "### Final Bridge", "b", "",
+      "### Next Actions", "- n", "",
+      "### References", "- LQOS-42", "- https://example.com/doc", "",
+      "### Source Journal", journalPath,
+    ].join("\n");
+    const current = currentMemoryDoc("demo", [
+      { date: "2026-06-10", title: "work with refs", decay: 5, importance: 3, tags: [], refs: ["LQOS-42", "https://example.com/doc"], promoted: false, content: withRefsContent, isArchived: false },
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000, currentMemory: current });
+
+    const entry = result.rebuilt.entries.find(e => e.title === "work with refs");
+    assert.ok(entry, "entry present after rebuild");
+    assert.deepEqual(entry.refs, ["LQOS-42", "https://example.com/doc"], "refs forward-carried onto the entry");
+    assert.match(entry.content, /### References\n- LQOS-42\n- https:\/\/example\.com\/doc/, "References section regenerated in the body");
+
+    // Round-trip: refs survive a full format/parse cycle (they live in the body).
+    const reparsed = parseMemoryMd(formatMemoryMd(result.rebuilt));
+    const reEntry = reparsed.entries.find(e => e.title === "work with refs");
+    assert.match(reEntry.content, /### References\n- LQOS-42/, "refs persist through a format/parse cycle");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 5: a stale frontmatter.token_estimate must NOT be trusted by
+// curateMemory; a rebuild that grows content past the limit must still archive
+// the overflow.
+test("rebuild finding-5: a rebuild that grows past the limit still curates (stale token_estimate ignored)", () => {
+  const dir = mkTmpDir();
+  try {
+    // Three substantial journals: their rebuilt content exceeds a tight limit.
+    const big = "word ".repeat(400).trim();
+    seedJournals(dir, [
+      journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: `oldest big ${big}` }),
+      journalWithSessionEnd({ date: "2026-06-11", seq: 1, summary: `middle big ${big}` }),
+      journalWithSessionEnd({ date: "2026-06-12", seq: 1, summary: `newest big ${big}` }),
+    ]);
+
+    // Current MEMORY claims a TINY token_estimate in frontmatter. If curateMemory
+    // trusted it, the oversized rebuild would skip curation entirely.
+    const current = [
+      "---",
+      'document: "MEMORY"',
+      "token_estimate: 5",
+      "---",
+      "",
+      "# Project Memory: demo",
+      "",
+    ].join("\n");
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 500, currentMemory: current });
+
+    assert.ok(result.rebuilt.archivedEntries.length > 0, "overflow archived despite the stale tiny token_estimate");
+    assert.ok(
+      result.rebuilt.entries.length < 3,
+      "not all three big entries stayed active under the 500-token limit",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 7: a promoted entry whose importance is below the active-retention
+// threshold must STAY ACTIVE after the rebuild (curateMemory would archive it;
+// the rebuild rescues it). curateMemory itself is unchanged (shared with /end).
+test("rebuild finding-7: a promoted low-importance entry stays ACTIVE after rebuild", () => {
+  const dir = mkTmpDir();
+  try {
+    const big = "word ".repeat(400).trim();
+    // Filler journals to force curation, plus the promoted-low entry.
+    seedJournals(dir, [
+      journalWithSessionEnd({ date: "2026-06-09", seq: 1, summary: `filler one ${big}` }),
+      journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: `filler two ${big}` }),
+      journalWithSessionEnd({ date: "2026-06-08", seq: 1, summary: "promoted low note" }),
+    ]);
+
+    const lowImportance = MEMORY_PROMOTION_IMPORTANCE_THRESHOLD - 2; // below the retain bar
+    assert.ok(lowImportance >= 1, "test importance stays in range");
+    // Current MEMORY: the old promoted entry has LOW importance (would be archived
+    // by curateMemory on size pressure) but its promoted marker must keep it active.
+    const current = currentMemoryDoc("demo", [
+      memoryEntry(dir, { date: "2026-06-09", seq: 1, title: `filler one ${big}`, importance: 3 }),
+      memoryEntry(dir, { date: "2026-06-10", seq: 1, title: `filler two ${big}`, importance: 3 }),
+      memoryEntry(dir, { date: "2026-06-08", seq: 1, title: "promoted low note", importance: lowImportance, promoted: true }),
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 500, currentMemory: current });
+
+    assert.equal(result.canCommit, true, "promoted entry is reproduced, so no conflict");
+    const active = result.rebuilt.entries.find(e => e.title === "promoted low note");
+    const archived = result.rebuilt.archivedEntries.find(e => e.title === "promoted low note");
+    assert.ok(active, "promoted low-importance entry is in the ACTIVE set");
+    assert.equal(archived, undefined, "promoted low-importance entry is NOT archived");
+    assert.equal(active.promoted, true, "marker preserved");
+    // Sanity: curation DID run (something got archived under the 500-token limit).
+    assert.ok(result.rebuilt.archivedEntries.length > 0, "curation ran (overflow archived)");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 7 (boundary): a promoted entry DELIBERATELY forward-carried as ARCHIVED
+// must KEEP its archive placement. The rescue only undoes curation-driven
+// archival, not an operator's intentional archive placement.
+test("rebuild finding-7: a promoted entry forward-carried as ARCHIVED stays archived (placement respected)", () => {
+  const dir = mkTmpDir();
+  try {
+    seedJournals(dir, [
+      journalWithSessionEnd({ date: "2026-06-11", seq: 1, summary: "active work" }),
+      journalWithSessionEnd({ date: "2026-06-10", seq: 1, summary: "deliberately archived promoted" }),
+    ]);
+
+    // MEMORY has the active entry; the archive holds a PROMOTED entry the operator
+    // intentionally placed cold. Plenty of token budget, so curation does NOT run.
+    const current = currentMemoryDoc("demo", [
+      memoryEntry(dir, { date: "2026-06-11", seq: 1, title: "active work", importance: 3 }),
+    ]);
+    const archive = currentArchiveDoc("demo", [
+      memoryEntry(dir, { date: "2026-06-10", seq: 1, title: "deliberately archived promoted", importance: 3, promoted: true, isArchived: true }),
+    ]);
+
+    const result = rebuildMemoryFromJournals(dir, {
+      tokenLimit: 100000, currentMemory: current, currentArchive: archive,
+    });
+
+    const inArchive = result.rebuilt.archivedEntries.find(e => e.title === "deliberately archived promoted");
+    const inActive = result.rebuilt.entries.find(e => e.title === "deliberately archived promoted");
+    assert.ok(inArchive, "deliberately-archived promoted entry stays in the ARCHIVE");
+    assert.equal(inActive, undefined, "it is NOT lifted into active by the rescue");
+    assert.equal(inArchive.promoted, true, "marker preserved");
+    assert.equal(result.canCommit, true, "reproducible promoted entry is not a conflict");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 6: a journal that quotes `## Session End:` inside a fenced code block
+// before the REAL appended block must parse the REAL block (the region locator
+// must be fence-aware, matching hasSessionEndBlock).
+test("rebuild finding-6: a fenced/quoted '## Session End:' is ignored; the real block is parsed", () => {
+  const dir = mkTmpDir();
+  try {
+    const filename = "2026-06-10-001-claude.md";
+    // The body quotes a Session End heading inside a ``` fence (e.g. documenting
+    // the format), THEN has the real appended block with a DIFFERENT summary.
+    const content = [
+      "---",
+      'schema_version: "2.0.0"',
+      'session_id: "2026-06-10-001"',
+      'project: "demo"',
+      'date: "2026-06-10"',
+      "sequence: 1",
+      'agent: "claude"',
+      "status: active",
+      'created: "2026-06-10T12:00:00.000Z"',
+      "previous_session: null",
+      "---",
+      "",
+      "# Session Journal: 2026-06-10-001",
+      "",
+      "## Notes",
+      "Documenting the end-block format for future reference, with enough body",
+      "text here to be clearly substantive and not an unworked stub placeholder.",
+      "",
+      "```md",
+      "## Session End: TEMPLATE",
+      "",
+      "### Summary",
+      "QUOTED TEMPLATE SUMMARY - must NOT become the entry",
+      "```",
+      "",
+      "## Session End: 2026-06-10T18:00:00.000Z",
+      "",
+      "### Summary",
+      "the real session summary",
+      "",
+      "### Final Bridge",
+      "real bridge",
+      "",
+      "### Next Actions",
+      "- real next",
+      "",
+      "---",
+      "*Session complete*",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(dir, filename), content);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000 });
+
+    assert.equal(result.journalEntryCount, 1, "the journal is rebuilt from its REAL Session End block");
+    const entry = result.rebuilt.entries[0];
+    assert.equal(entry.title, "the real session summary", "title from the real block, not the quoted template");
+    assert.match(entry.content, /### Summary\nthe real session summary/, "body from the real block");
+    assert.doesNotMatch(entry.content, /QUOTED TEMPLATE SUMMARY/, "the fenced template block is not parsed");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Finding 8: the rebuild's title derivation must use the live titleFromSummary
+// (which skips heading/blank lines), so a regenerated title byte-matches how
+// /end stored it (keeping the legacy date+title fallback aligned).
+test("rebuild finding-8: title uses titleFromSummary parity (skips a leading heading line)", () => {
+  const dir = mkTmpDir();
+  try {
+    // A summary whose first line is a markdown heading. titleFromSummary skips it
+    // and uses the first real content line; a naive firstLine would keep the '#'.
+    const filename = "2026-06-10-001-claude.md";
+    const content = [
+      "---",
+      'schema_version: "2.0.0"',
+      'session_id: "2026-06-10-001"',
+      'project: "demo"',
+      'date: "2026-06-10"',
+      "sequence: 1",
+      'agent: "claude"',
+      "status: active",
+      'created: "2026-06-10T12:00:00.000Z"',
+      "previous_session: null",
+      "---",
+      "",
+      "# Session Journal: 2026-06-10-001",
+      "",
+      "## Worked on real things with a clearly substantive body to avoid the stub",
+      "filter, padding padding padding padding padding padding padding padding.",
+      "",
+      "## Session End: 2026-06-10T18:00:00.000Z",
+      "",
+      "### Summary",
+      "# Heading line that should be skipped",
+      "the actual title content line",
+      "",
+      "### Final Bridge",
+      "b",
+      "",
+      "### Next Actions",
+      "- n",
+      "",
+      "---",
+      "*Session complete*",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(dir, filename), content);
+
+    const result = rebuildMemoryFromJournals(dir, { tokenLimit: 100000 });
+    const entry = result.rebuilt.entries[0];
+    assert.equal(entry.title, "the actual title content line", "titleFromSummary skips the heading line");
+    assert.doesNotMatch(entry.title, /^#/, "the derived title does not start with a markdown heading marker");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
