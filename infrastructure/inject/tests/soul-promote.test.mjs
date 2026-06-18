@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promoteMemoryEntryToSoul } from "../dist/lib/soul-promote.js";
+import { acquireMemoryLock, releaseMemoryLock } from "../dist/lib/memory-lock.js";
 
 function tempSetup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zeos-promote-test-"));
@@ -378,6 +379,99 @@ test("promoted marker is preserved across active <-> archive moves (only the mat
     parsed.entries = parsed.entries.filter(e => e.title !== "Second entry same day");
     const archive = formatMemoryMd(parsed, "archive");
     assert.match(archive, /\[promoted:true\]/, "[promoted:true] must survive active -> archive transition");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P1: the MEMORY read-modify-write is serialized under the memory lock ----
+
+test("promoteMemoryEntryToSoul: a real promote is REFUSED while the memory lock is held (contention path)", () => {
+  const root = tempSetup();
+  const memoryPath = path.join(root, "memory", "demo", "MEMORY.md");
+  try {
+    // Simulate a concurrent locked /end or curate holding the memory lock.
+    assert.equal(acquireMemoryLock(memoryPath), true, "precondition: external holder acquires the lock");
+
+    const r = promoteMemoryEntryToSoul({
+      soulPath: path.join(root, "souls", "demo", "SOUL.md"),
+      memoryPath,
+      entryDate: "2026-05-22",
+      section: "Constraints",
+      dryRun: false,
+    });
+
+    // The promote must not clobber the concurrent writer: it refuses rather than
+    // doing an unlocked read-modify-write that could lose the [promoted:true]
+    // marker (the lost-update class).
+    assert.equal(r.promoted, false, "promote refuses while the lock is held");
+    assert.match(r.error || "", /lock/i, "the error names the lock contention");
+
+    // The MEMORY marker write was skipped (no unlocked write happened).
+    const memory = fs.readFileSync(memoryPath, "utf-8");
+    assert(!memory.includes("[promoted:true]"), "no marker written while the lock was contended");
+  } finally {
+    releaseMemoryLock(memoryPath);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("promoteMemoryEntryToSoul: after the lock is released the promote succeeds and writes the marker", () => {
+  const root = tempSetup();
+  const memoryPath = path.join(root, "memory", "demo", "MEMORY.md");
+  try {
+    // Hold then release: the lock must not be left orphaned by a refused promote.
+    assert.equal(acquireMemoryLock(memoryPath), true);
+    promoteMemoryEntryToSoul({
+      soulPath: path.join(root, "souls", "demo", "SOUL.md"),
+      memoryPath,
+      entryDate: "2026-05-22",
+      section: "Constraints",
+      dryRun: false,
+    });
+    releaseMemoryLock(memoryPath);
+
+    const r = promoteMemoryEntryToSoul({
+      soulPath: path.join(root, "souls", "demo", "SOUL.md"),
+      memoryPath,
+      entryDate: "2026-05-22",
+      section: "Constraints",
+      dryRun: false,
+    });
+    assert.equal(r.promoted, true, "promote succeeds once the lock is free");
+    const memory = fs.readFileSync(memoryPath, "utf-8");
+    assert.match(memory, /\[promoted:true\]/, "marker written after acquiring the lock");
+
+    // The lock is released by the successful promote (try/finally), so a
+    // subsequent acquire succeeds.
+    assert.equal(acquireMemoryLock(memoryPath), true, "lock released after a successful promote");
+    releaseMemoryLock(memoryPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("promoteMemoryEntryToSoul: the MEMORY marker write produces a .bak snapshot (atomicWriteWithBackup)", () => {
+  const root = tempSetup();
+  const memoryPath = path.join(root, "memory", "demo", "MEMORY.md");
+  try {
+    const priorMemory = fs.readFileSync(memoryPath, "utf-8");
+    const r = promoteMemoryEntryToSoul({
+      soulPath: path.join(root, "souls", "demo", "SOUL.md"),
+      memoryPath,
+      entryDate: "2026-05-22",
+      section: "Constraints",
+      dryRun: false,
+    });
+    assert.equal(r.promoted, true);
+    // The promotion-marker write goes through atomicWriteWithBackup, so a
+    // single-generation .bak snapshot of the prior MEMORY.md must exist.
+    assert.ok(fs.existsSync(`${memoryPath}.bak`), "MEMORY.md.bak snapshot exists after the marker write");
+    assert.equal(
+      fs.readFileSync(`${memoryPath}.bak`, "utf-8"),
+      priorMemory,
+      ".bak holds the prior (pre-marker) MEMORY.md generation"
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
