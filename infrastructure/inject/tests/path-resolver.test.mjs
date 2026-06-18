@@ -105,22 +105,24 @@ function secretShapedLine() {
   return `api_key="${value}"`;
 }
 
-test("verifyJournalWritten: a clean journal passes the readback redaction gate", () => {
+test("verifyJournalWritten: a clean appended chunk passes the readback gate", () => {
   const tmp = path.join(os.tmpdir(), `inject-test-clean-${Date.now()}.md`);
-  fs.writeFileSync(tmp, "## Session End\nordinary recap, no secrets.\n");
+  const chunk = "## Session End\nordinary recap, no secrets.\n";
+  fs.writeFileSync(tmp, chunk);
   try {
-    assert.doesNotThrow(() => verifyJournalWritten(tmp));
+    assert.doesNotThrow(() => verifyJournalWritten(tmp, chunk));
   } finally {
     fs.unlinkSync(tmp);
   }
 });
 
-test("verifyJournalWritten: an unredacted secret on disk fails the readback gate", () => {
+test("verifyJournalWritten: a secret-shaped APPENDED CHUNK fails the readback gate", () => {
   const tmp = path.join(os.tmpdir(), `inject-test-leak-${Date.now()}.md`);
-  fs.writeFileSync(tmp, `## Session End\nleaked ${secretShapedLine()}\n`);
+  const chunk = `## Session End\nleaked ${secretShapedLine()}\n`;
+  fs.writeFileSync(tmp, chunk);
   try {
     assert.throws(
-      () => verifyJournalWritten(tmp),
+      () => verifyJournalWritten(tmp, chunk),
       /unredacted secret-shaped/i,
     );
   } finally {
@@ -128,12 +130,47 @@ test("verifyJournalWritten: an unredacted secret on disk fails the readback gate
   }
 });
 
-test("verifyJournalWritten: a journal carrying only redaction MARKERS still passes", () => {
+test("verifyJournalWritten: a pre-existing legacy secret OUTSIDE the appended chunk does NOT brick the write (footgun fix)", () => {
+  // The journal already carries a legacy secret-shaped string written by an
+  // older build before the redaction gate existed. A new, clean append must
+  // still succeed: the verification is scoped to the appended chunk, never a
+  // whole-file re-scan that a single legacy false-positive could permanently
+  // brick (every future snap/end on that journal would throw otherwise).
+  const tmp = path.join(os.tmpdir(), `inject-test-legacy-${Date.now()}.md`);
+  const legacyBody = `## Old Session\nlegacy ${secretShapedLine()}\n`;
+  const cleanChunk = "\n## Session End\nclean recap, no secrets.\n";
+  fs.writeFileSync(tmp, legacyBody + cleanChunk);
+  try {
+    assert.doesNotThrow(
+      () => verifyJournalWritten(tmp, cleanChunk),
+      "a clean append succeeds despite a pre-existing legacy secret elsewhere in the file",
+    );
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("verifyJournalWritten: a torn/partial append (chunk not at the tail) fails", () => {
+  const tmp = path.join(os.tmpdir(), `inject-test-torn-${Date.now()}.md`);
+  // The on-disk tail does not match the chunk we claim to have appended.
+  fs.writeFileSync(tmp, "## Session End\nonly half of the chunk landed");
+  try {
+    assert.throws(
+      () => verifyJournalWritten(tmp, "## Session End\nthe full chunk that should be at the tail\n"),
+      /torn or partial append/i,
+    );
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("verifyJournalWritten: an appended chunk carrying only redaction MARKERS still passes", () => {
   const tmp = path.join(os.tmpdir(), `inject-test-marker-${Date.now()}.md`);
   // An already-redacted marker must not be re-flagged (idempotent redaction).
-  fs.writeFileSync(tmp, '## Session End\napi_key="[REDACTED:ENV_SECRET]"\n');
+  const chunk = '## Session End\napi_key="[REDACTED:ENV_SECRET]"\n';
+  fs.writeFileSync(tmp, chunk);
   try {
-    assert.doesNotThrow(() => verifyJournalWritten(tmp));
+    assert.doesNotThrow(() => verifyJournalWritten(tmp, chunk));
   } finally {
     fs.unlinkSync(tmp);
   }

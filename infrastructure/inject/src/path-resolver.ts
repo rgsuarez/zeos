@@ -174,21 +174,52 @@ export function resolveProjectClaudeMdPath(app: PathResolverApp): string {
   return `${resolveProjectRoot(app)}CLAUDE.md`;
 }
 
-export function verifyJournalWritten(absolutePath: string): void {
+/**
+ * Post-append verification for an append-only journal write.
+ *
+ * Scoping matters: journals are append-only and long-lived, so a whole-file
+ * re-scan is a footgun. A single pre-existing legacy false-positive (a
+ * secret-shaped string written by an older build before the redaction gate
+ * existed) would make EVERY future snap/end on that journal throw here,
+ * bricking the journal permanently even though the new write is clean. The
+ * newly-appended chunk is ALREADY gated pre-append by appendFileSyncDurable, so
+ * the verification we need is narrow: confirm the file exists and that the new
+ * chunk actually landed on disk intact and clean (defense-in-depth on the new
+ * content only), NOT a re-scan of possibly-legacy bytes we did not just write.
+ *
+ * When `appendedChunk` is omitted (e.g. a stub create that writes via
+ * `{flag:"wx"}` and has no appended delta), only existence is verified; the
+ * whole-file secret re-scan is intentionally not performed.
+ */
+export function verifyJournalWritten(absolutePath: string, appendedChunk?: string): void {
   if (!fs.existsSync(absolutePath)) {
     throw new Error(`Journal write verification failed: file does not exist at ${absolutePath}`);
   }
-  // Post-write readback redaction gate: prove the file that just landed on disk
-  // carries no unredacted secret-shaped bytes. redactSensitiveText is idempotent
-  // against existing [REDACTED:...] markers, so a count above zero means a real
-  // secret survived the pre-write redaction and reached the journal.
+
+  if (appendedChunk === undefined) return;
+
   const onDisk = fs.readFileSync(absolutePath, "utf-8");
-  const { count, labels } = redactSensitiveText(onDisk);
+
+  // Confirm the appended bytes landed intact: an append-only durable write ends
+  // with exactly the chunk we handed it, so a torn/partial append is caught by
+  // the tail not matching.
+  if (!onDisk.endsWith(appendedChunk)) {
+    throw new Error(
+      `Journal write verification failed: the appended chunk is not present at ` +
+        `the tail of ${absolutePath} (torn or partial append).`
+    );
+  }
+
+  // Defense-in-depth on the NEW content only: the chunk was already gated
+  // pre-append, but re-assert the on-disk copy of just the appended region.
+  // redactSensitiveText is idempotent against [REDACTED:...] markers, so a
+  // count above zero means a real secret survived into the new chunk.
+  const { count, labels } = redactSensitiveText(appendedChunk);
   if (count > 0) {
     const labelSuffix = labels.length > 0 ? ` (${labels.join(", ")})` : "";
     throw new Error(
       `Journal write verification failed: ${count} unredacted secret-shaped ` +
-        `value(s)${labelSuffix} reached disk at ${absolutePath}.`
+        `value(s)${labelSuffix} reached disk in the appended chunk at ${absolutePath}.`
     );
   }
 }

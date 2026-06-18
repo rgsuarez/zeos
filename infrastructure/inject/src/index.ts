@@ -1210,9 +1210,11 @@ ${formatRedactionNotice(redactions)}
         // Durable append (append + fsync) with a pre-append redaction gate, so
         // a torn write cannot leave a partial checkpoint and no secret-shaped
         // byte reaches the append-only journal. verifyJournalWritten then
-        // re-asserts the full file on readback.
+        // confirms the appended chunk landed intact and clean (scoped to the new
+        // chunk, never a whole-file re-scan that a legacy false-positive could
+        // brick).
         appendFileSyncDurable(journalPath, snapEntry);
-        verifyJournalWritten(journalPath);
+        verifyJournalWritten(journalPath, snapEntry);
 
         const redactionSummary = redactions.count > 0
           ? ` (${redactions.count} sensitive value(s) redacted)`
@@ -1326,7 +1328,7 @@ ${formatRedactionNotice(redactions)}
 `;
 
           appendSessionEnd(journalPath, endEntry);
-          verifyJournalWritten(journalPath);
+          verifyJournalWritten(journalPath, endEntry);
         }
 
         // Clear session registries for this agent's session
