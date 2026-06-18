@@ -38,7 +38,7 @@ token_limit: "≤500 tokens"
 
 ## Parallel Instances
 
-**Instance ID:** `{agent}-{hash4}` (e.g., claude-opus-a3f2)
+**Instance ID:** the bare agent name (e.g., `claude`, `gemini`, `codex`); the `instance` frontmatter mirrors `agent` with no hash suffix
 
 **Journal Stub:** Created immediately on `/project` load, enables early detection
 

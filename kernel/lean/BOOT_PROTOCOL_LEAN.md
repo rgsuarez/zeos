@@ -66,7 +66,7 @@ PROFILE (Layer 2) — Operator Context
 - On `/project <id>`: Create journal stub immediately, enable journaling
 
 **Step 4.5:** Parallel Instance Detection
-- Generate instance ID: {agent}-{hash4}
+- Instance ID is the bare agent name (the `instance` frontmatter mirrors `agent`; no hash suffix)
 - Scan ~/.zeos/journals/<app_id>/ for parallel instances
 
 **Step 4.6:** Repo Boundary Detection (git root, enforcement level)
