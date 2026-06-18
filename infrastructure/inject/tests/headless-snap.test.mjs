@@ -165,6 +165,55 @@ test("runHeadlessSnap: a vanished journal (pointer stale-by-deletion) no-ops, no
   });
 });
 
+test("runHeadlessSnap: TOCTOU - journal deleted AFTER resolve, BEFORE append -> no-op, never recreated", () => {
+  withTempState((root) => {
+    const journal = seedJournal(root);
+    // Inject a pointer that resolves successfully (as if the journal existed at
+    // resolve time) but delete the journal first, simulating the resolve->append
+    // race. The append path must NOT create (resurrect) the journal.
+    fs.rmSync(journal, { force: true });
+    const res = runHeadlessSnap(["--session", SID, "--handoff", "x"], {
+      resolvePointer: () => ({
+        schema: 1,
+        session_id: SID,
+        app_id: "demo-app",
+        agent: "claude",
+        journal_path: journal,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    assert.equal(res.status, "noop", "vanished-before-append is a no-op, not an error");
+    assert.equal(res.reason, "journal-vanished-before-append");
+    assert.equal(fs.existsSync(journal), false, "journal was NOT recreated by the append");
+  });
+});
+
+test("runHeadlessSnap: belt - a resolved pointer whose journal is OUTSIDE the root no-ops, writes nothing", () => {
+  withTempState((root) => {
+    seedJournal(root); // materialize the journals root
+    // A real out-of-root file (mimics MEMORY.md). Inject a pointer aimed at it,
+    // bypassing the resolve-side gate, to prove the headless append has its own
+    // containment belt and never directs a write outside the journals root.
+    const outside = path.join(root, "memory", "demo-app", "MEMORY.md");
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    const sentinel = "# memory sentinel\n";
+    fs.writeFileSync(outside, sentinel);
+    const res = runHeadlessSnap(["--session", SID, "--handoff", "x"], {
+      resolvePointer: () => ({
+        schema: 1,
+        session_id: SID,
+        app_id: "demo-app",
+        agent: "claude",
+        journal_path: outside,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    assert.equal(res.status, "noop", "out-of-root journal no-ops");
+    assert.equal(res.reason, "pointer-journal-outside-root");
+    assert.equal(fs.readFileSync(outside, "utf-8"), sentinel, "out-of-root file untouched");
+  });
+});
+
 test("runHeadlessSnap: best-effort git snapshot is appended when provided", () => {
   withTempState((root) => {
     const journal = seedJournal(root);

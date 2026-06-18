@@ -103,12 +103,32 @@ class UpsertPureTransformTest(unittest.TestCase):
         self.assertIn(COMMAND, cmds)
         self.assertEqual(len(cmds), 2)
 
-    def test_coerces_malformed_hooks_block_without_crashing(self):
-        # hooks present but wrong type -> rebuilt; PreCompact present but wrong type
-        out = shu.upsert({"hooks": []}, COMMAND, MARKER)
-        self.assertEqual(precompact_commands(out), [COMMAND])
-        out2 = shu.upsert({"hooks": {"PreCompact": "nope"}}, COMMAND, MARKER)
-        self.assertEqual(precompact_commands(out2), [COMMAND])
+    def test_refuses_corrupt_hooks_or_precompact_shape_instead_of_coercing(self):
+        # A non-dict `hooks` or a non-list `PreCompact` must NOT be silently
+        # replaced (that would drop sibling SessionStart/SessionEnd). The pure
+        # transform raises so the I/O layer can refuse and leave the file intact.
+        with self.assertRaises(shu.SettingsShapeError):
+            shu.upsert({"hooks": []}, COMMAND, MARKER)
+        with self.assertRaises(shu.SettingsShapeError):
+            shu.upsert({"hooks": {"PreCompact": "nope"}}, COMMAND, MARKER)
+        # A non-object settings root is likewise refused, not overwritten.
+        with self.assertRaises(shu.SettingsShapeError):
+            shu.upsert(["not", "a", "dict"], COMMAND, MARKER)
+
+    def test_refusal_does_not_drop_sibling_hooks(self):
+        # Prove the dropped-data risk is real: the corrupt input carries a
+        # SessionEnd we must not lose. The transform refuses (raises) rather than
+        # returning a dict that silently discards SessionEnd.
+        corrupt = {
+            "hooks": {
+                "SessionEnd": [
+                    {"hooks": [{"type": "command", "command": "/keep/me.sh"}]}
+                ],
+                "PreCompact": "corrupt-not-a-list",
+            }
+        }
+        with self.assertRaises(shu.SettingsShapeError):
+            shu.upsert(corrupt, COMMAND, MARKER)
 
 
 class MainFileIoTest(unittest.TestCase):
@@ -167,6 +187,54 @@ class MainFileIoTest(unittest.TestCase):
         rc = self._run()
         self.assertEqual(rc, 1, "non-zero exit, file left intact")
         self.assertEqual(self.settings.read_text(), "{ this is not json")
+
+    def test_refuses_corrupt_hooks_shape_file_left_byte_unchanged(self):
+        # `hooks` present but a non-dict: parseable JSON, but coercing it would
+        # drop SessionStart/SessionEnd. The tool must leave the file byte-for-byte
+        # unchanged and exit non-zero (auto-capture off, nothing clobbered).
+        original = json.dumps(
+            {
+                "theme": "dark",
+                "hooks": ["this", "is", "not", "a", "dict"],
+            }
+        )
+        self.settings.write_text(original)
+        rc = self._run()
+        self.assertEqual(rc, 1, "non-zero exit on corrupt hooks shape")
+        self.assertEqual(
+            self.settings.read_text(), original, "file left byte-for-byte unchanged"
+        )
+
+    def test_refuses_corrupt_precompact_shape_preserving_session_hooks(self):
+        # `hooks.PreCompact` is a non-list while real SessionStart/SessionEnd
+        # exist alongside. The tool must refuse and leave those siblings intact.
+        original = json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "/keep/start.sh"}]}
+                    ],
+                    "SessionEnd": [
+                        {"hooks": [{"type": "command", "command": "/keep/end.sh"}]}
+                    ],
+                    "PreCompact": "corrupt-not-a-list",
+                }
+            }
+        )
+        self.settings.write_text(original)
+        rc = self._run()
+        self.assertEqual(rc, 1, "non-zero exit on corrupt PreCompact shape")
+        self.assertEqual(
+            self.settings.read_text(), original, "file untouched; SessionStart/End survive"
+        )
+        # And confirm the surviving file still carries the session hooks.
+        data = json.loads(self.settings.read_text())
+        self.assertEqual(
+            data["hooks"]["SessionStart"][0]["hooks"][0]["command"], "/keep/start.sh"
+        )
+        self.assertEqual(
+            data["hooks"]["SessionEnd"][0]["hooks"][0]["command"], "/keep/end.sh"
+        )
 
     def test_generated_json_parses_and_has_expected_shape(self):
         self._run()

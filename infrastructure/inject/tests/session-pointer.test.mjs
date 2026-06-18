@@ -13,6 +13,7 @@ import {
   resolveSessionPointer,
   gcStalePointers,
   deleteSessionPointer,
+  containedRealJournalPath,
 } from "../dist/lib/session-pointer.js";
 
 // resolvePointerDir() reads ZEOS_STATE_ROOT live, so a per-test temp state root
@@ -183,12 +184,31 @@ test("resolveSessionPointer: fresh pointer within TTL resolves; custom ttl honor
   });
 });
 
-test("resolveSessionPointer: a future-stamped pointer (clock skew) is not treated stale", () => {
+test("resolveSessionPointer: a slightly-future pointer (minor clock skew) is not treated stale", () => {
   withTempState((root) => {
     const journal = seedJournal(root);
-    const future = new Date(Date.now() + 5 * 60_000);
-    writeSessionPointer({ sessionId: SID, appId: "demo-app", agent: "claude", journalPath: journal, now: future });
-    assert.ok(resolveSessionPointer(SID), "future timestamp resolves rather than no-ops");
+    // Within the small future-skew tolerance: plausible real clock skew.
+    const nearFuture = new Date(Date.now() + 60_000);
+    writeSessionPointer({ sessionId: SID, appId: "demo-app", agent: "claude", journalPath: journal, now: nearFuture });
+    assert.ok(resolveSessionPointer(SID), "minor future skew resolves rather than no-ops");
+  });
+});
+
+test("resolveSessionPointer: a FAR-future pointer (forged timestamp) is treated stale, not perpetually fresh", () => {
+  withTempState((root) => {
+    const journal = seedJournal(root);
+    // A tampered far-future updated_at would otherwise never age out via the TTL
+    // (age is negative). It must be rejected as invalid/stale instead.
+    const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60_000); // +1 year
+    const written = writeSessionPointer({
+      sessionId: SID,
+      appId: "demo-app",
+      agent: "claude",
+      journalPath: journal,
+      now: farFuture,
+    });
+    assert.ok(written, "write itself still succeeds (containment, not timestamp, gates the write)");
+    assert.equal(resolveSessionPointer(SID), null, "far-future pointer does not resolve");
   });
 });
 
@@ -234,5 +254,129 @@ test("deleteSessionPointer: removes the session's pointer; unsafe id is a no-op"
     assert.equal(fs.existsSync(written), true);
     deleteSessionPointer(SID);
     assert.equal(fs.existsSync(written), false);
+  });
+});
+
+// ---- journal-path containment (P1 safety: never write the wrong journal) ----
+//
+// Seed a real journal first so the journals root (<state>/journals) exists and
+// realpath can resolve it; then exercise the escape vectors.
+
+test("containedRealJournalPath: a legit journal under the journals root is accepted", () => {
+  withTempState((root) => {
+    const journal = seedJournal(root); // <root>/journals/demo-app/<file>.md
+    const real = containedRealJournalPath(journal);
+    assert.ok(real, "in-root journal is contained");
+    assert.equal(real, fs.realpathSync(journal));
+  });
+});
+
+test("containedRealJournalPath: an absolute path OUTSIDE the journals root is rejected", () => {
+  withTempState((root) => {
+    seedJournal(root); // materialize the journals root
+    // A real file outside the journals tree (mimics MEMORY.md / a transcript).
+    const outside = path.join(root, "memory", "demo-app", "MEMORY.md");
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(outside, "# memory\n");
+    assert.equal(containedRealJournalPath(outside), null, "outside-root path rejected");
+    // /tmp-style absolute outside the state root entirely.
+    const tmpFile = fs.mkdtempSync(path.join(os.tmpdir(), "zeos-outside-")) + "/x.md";
+    fs.writeFileSync(tmpFile, "x");
+    assert.equal(containedRealJournalPath(tmpFile), null, "unrelated absolute path rejected");
+    fs.rmSync(path.dirname(tmpFile), { recursive: true, force: true });
+  });
+});
+
+test("containedRealJournalPath: a journal that is a SYMLINK escaping the root is rejected", () => {
+  withTempState((root) => {
+    const journalDir = path.join(root, "journals", "demo-app");
+    fs.mkdirSync(journalDir, { recursive: true });
+    // A real target OUTSIDE the journals root.
+    const escapeTarget = path.join(root, "escape-target.md");
+    fs.writeFileSync(escapeTarget, "# not a journal\n");
+    // A symlink INSIDE the journals dir pointing at the outside target.
+    const link = path.join(journalDir, "2026-06-18-001-claude.md");
+    fs.symlinkSync(escapeTarget, link);
+    // The path looks in-root, but realpath resolves the symlink to outside.
+    assert.equal(containedRealJournalPath(link), null, "symlink escaping the root rejected");
+  });
+});
+
+test("writeSessionPointer: rejects a journal path outside the journals root (no pointer written)", () => {
+  withTempState((root) => {
+    seedJournal(root); // materialize the root
+    const outside = path.join(root, "memory", "demo-app", "MEMORY.md");
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(outside, "# memory\n");
+    const written = writeSessionPointer({
+      sessionId: SID,
+      appId: "demo-app",
+      agent: "claude",
+      journalPath: outside,
+    });
+    assert.equal(written, null, "write rejected for out-of-root journal");
+    const ptrs = fs.existsSync(resolvePointerDir())
+      ? fs.readdirSync(resolvePointerDir()).filter((f) => f.endsWith(".json"))
+      : [];
+    assert.deepEqual(ptrs, [], "no pointer persisted for a rejected journal");
+  });
+});
+
+test("resolveSessionPointer: a tampered pointer whose journal_path is OUTSIDE the root no-ops", () => {
+  withTempState((root) => {
+    const journal = seedJournal(root); // materialize root; legit journal for shape
+    // A real out-of-root file we will point the tampered pointer at.
+    const outside = path.join(root, "memory", "demo-app", "MEMORY.md");
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    const sentinel = "# memory sentinel\n";
+    fs.writeFileSync(outside, sentinel);
+    // Hand-write a valid-shaped pointer that points OUTSIDE the journals root,
+    // simulating a tampered ~/.zeos/.active/<id>.json on disk.
+    const dir = resolvePointerDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const tampered = {
+      schema: 1,
+      session_id: SID,
+      app_id: "demo-app",
+      agent: "claude",
+      journal_path: outside,
+      updated_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(dir, `${SID}.json`), JSON.stringify(tampered) + "\n");
+    assert.equal(resolveSessionPointer(SID), null, "tampered out-of-root pointer no-ops on resolve");
+    // The out-of-root file must be untouched (resolution never directed a write).
+    assert.equal(fs.readFileSync(outside, "utf-8"), sentinel, "out-of-root file untouched");
+    // Sanity: a legit in-root pointer for the same shape still resolves.
+    writeSessionPointer({ sessionId: SID, appId: "demo-app", agent: "claude", journalPath: journal });
+    assert.ok(resolveSessionPointer(SID), "legit in-root journal still resolves");
+  });
+});
+
+test("resolveSessionPointer: a tampered pointer whose journal is a SYMLINK escaping the root no-ops", () => {
+  withTempState((root) => {
+    const journalDir = path.join(root, "journals", "demo-app");
+    fs.mkdirSync(journalDir, { recursive: true });
+    const escapeTarget = path.join(root, "escape-target.md");
+    const sentinel = "# escape sentinel\n";
+    fs.writeFileSync(escapeTarget, sentinel);
+    const link = path.join(journalDir, "2026-06-18-001-claude.md");
+    fs.symlinkSync(escapeTarget, link);
+    // The write gate would reject this symlink, so hand-write a valid-shaped
+    // pointer that references the in-dir symlink path (looks contained on its
+    // face, resolves OUT) to prove the RESOLVE side independently rejects it -
+    // i.e. it does not trust the on-disk pointer.
+    const dir = resolvePointerDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const tampered = {
+      schema: 1,
+      session_id: SID,
+      app_id: "demo-app",
+      agent: "claude",
+      journal_path: link,
+      updated_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(dir, `${SID}.json`), JSON.stringify(tampered) + "\n");
+    assert.equal(resolveSessionPointer(SID), null, "symlink-escaping pointer no-ops on resolve");
+    assert.equal(fs.readFileSync(escapeTarget, "utf-8"), sentinel, "symlink target untouched");
   });
 });
