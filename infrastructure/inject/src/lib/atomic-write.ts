@@ -214,17 +214,29 @@ export function atomicWriteWithBackup(
 export function appendFileSyncDurable(
   targetPath: string,
   chunk: string,
-  opts: { assertRedaction?: boolean } = {}
+  opts: { assertRedaction?: boolean; createIfMissing?: boolean } = {}
 ): void {
   const assertRedaction = opts.assertRedaction !== false;
+  // Default true preserves the existing contract for /snap and /end, which
+  // legitimately append to a freshly-created stub: the "a" flag creates the file
+  // when absent. The headless PreCompact path passes false so a journal that
+  // vanished between resolve and append (TOCTOU) is NOT recreated - O_APPEND
+  // without O_CREAT throws ENOENT and the caller no-ops instead of resurrecting
+  // a deleted journal.
+  const createIfMissing = opts.createIfMissing !== false;
 
   // Pre-append gate: the chunk is the only new content; assert it is clean
-  // before any byte reaches the append-only file.
+  // before any byte reaches the append-only file. Identical for both modes, so
+  // the redaction-before-append guarantee holds for the no-create path too.
   if (assertRedaction) assertNoSecrets(chunk, "pre-append", targetPath);
 
   let fd: number | null = null;
   try {
-    fd = fs.openSync(targetPath, "a");
+    // "a" => O_WRONLY|O_APPEND|O_CREAT (creates if missing). The no-create mode
+    // drops O_CREAT, so opening a missing path throws ENOENT.
+    fd = createIfMissing
+      ? fs.openSync(targetPath, "a")
+      : fs.openSync(targetPath, fs.constants.O_WRONLY | fs.constants.O_APPEND);
     fs.writeFileSync(fd, chunk);
     fs.fsyncSync(fd); // force the appended tail to stable storage
   } finally {

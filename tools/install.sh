@@ -352,6 +352,41 @@ fi
 echo -e "${GREEN}✓ MCP servers wired in ~/.claude.json and ~/.mcp.json${NC}"
 
 # ═══════════════════════════════════════════════════════════════
+# Configure the PreCompact auto-snap hook in ~/.claude/settings.json
+# (Claude Code settings; NET-NEW file for this installer). Deep-merges a single
+# hooks.PreCompact entry WITHOUT clobbering existing user hooks or other keys.
+# Idempotent: re-running updates the zeos entry in place rather than duplicating.
+# ═══════════════════════════════════════════════════════════════
+
+echo ""
+echo -e "${YELLOW}Configuring PreCompact auto-snap hook...${NC}"
+
+# Deep-merge a single PreCompact hook command into settings.json. Delegates to
+# tools/settings-hook-upsert.py (a standalone, unit-tested unit) which touches
+# ONLY hooks.PreCompact, preserves existing user hooks and other keys, and is
+# idempotent via the marker substring so re-running never duplicates our entry.
+settings_hook_upsert() {
+    local file="$1" command="$2" marker="$3"
+    mkdir -p "$(dirname "$file")"
+    python3 "$ZEOS_DIR/tools/settings-hook-upsert.py" "$file" "$command" "$marker"
+}
+
+CLAUDE_SETTINGS="$CLAUDE_DIR/settings.json"
+PRECOMPACT_HOOK="$ZEOS_DIR/infrastructure/inject/bin/precompact-snap.sh"
+chmod +x "$PRECOMPACT_HOOK" 2>/dev/null || true
+
+# The script basename is the idempotency marker; it is stable across installs.
+# Check the upsert exit status: a corrupt/unparseable settings.json (or an
+# unexpected hooks shape) exits non-zero and leaves the file UNTOUCHED, so only
+# claim success on exit 0; on failure warn clearly and continue without
+# pretending the hook was wired.
+if settings_hook_upsert "$CLAUDE_SETTINGS" "$PRECOMPACT_HOOK" "precompact-snap.sh"; then
+  echo -e "${GREEN}✓ PreCompact auto-snap hook wired in ~/.claude/settings.json${NC}"
+else
+  echo -e "${YELLOW}⚠ Could not wire the PreCompact auto-snap hook: $CLAUDE_SETTINGS was left unchanged (unparseable or unexpected hooks shape). Auto-capture is OFF until this is resolved; see the message above.${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # Create CLAUDE.md (skip if exists or update mode)
 # ═══════════════════════════════════════════════════════════════
 

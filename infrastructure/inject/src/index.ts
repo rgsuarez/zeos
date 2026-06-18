@@ -105,6 +105,14 @@ import {
   acquireMemoryLock,
   releaseMemoryLock,
 } from "./lib/memory-lock.js";
+import {
+  writeSessionPointer,
+  currentSessionIdFromEnv,
+  resolveSessionPointer,
+  gcStalePointers,
+  deleteSessionPointer,
+} from "./lib/session-pointer.js";
+import { runHeadlessSnap } from "./lib/headless-snap.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -605,6 +613,28 @@ Coordinate to avoid conflicts.
   // Also register agent name for this project — enables /snap and /end to
   // auto-resolve agent without requiring explicit param every call.
   _sessionAgents[app.app_id] = agentName;
+
+  // Write a per-session active-project pointer so a PreCompact hook (a shell
+  // command with no in-process state) can checkpoint THIS session's journal.
+  // Keyed by CLAUDE_CODE_SESSION_ID, which the hook receives as `session_id` on
+  // stdin. Best-effort: a missing/unsafe id, or an unwritable dir, simply skips
+  // the pointer (auto-capture then no-ops); it never blocks a project load.
+  // Also opportunistically GC dead-session pointers so the dir self-cleans.
+  try {
+    const pointerSessionId = currentSessionIdFromEnv();
+    if (pointerSessionId) {
+      const absoluteJournalPath = path.join(expandPath(journalDir), journalStub);
+      writeSessionPointer({
+        sessionId: pointerSessionId,
+        appId: app.app_id,
+        agent: agentName,
+        journalPath: absoluteJournalPath,
+      });
+    }
+    gcStalePointers();
+  } catch {
+    /* best-effort; a pointer is convenience, never a correctness dependency */
+  }
 
   // Build memory section. Strip the Continuity Digest from the tier-1 rendering
   // because it's now rendered above SOUL as `carryForwardSection`; we don't want
@@ -1426,6 +1456,15 @@ ${formatRedactionNotice(redactions)}
         delete _activeJournals[sessionKey];
         delete _sessionAgents[app.app_id];
 
+        // Clear the per-session active-project pointer so a PreCompact firing in
+        // a continued/resumed session after /end does NOT append a checkpoint
+        // below the `## Session End:` block. Keyed by the same env session id the
+        // /project load used to write it. Best-effort and never throws; a missing
+        // or unsafe id simply no-ops (the TTL would eventually reap a stray
+        // pointer, but clearing it here closes the window immediately).
+        const endSessionId = currentSessionIdFromEnv();
+        if (endSessionId) deleteSessionPointer(endSessionId);
+
         // Update MEMORY.md with session summary and auto-curate.
         // Lockfile prevents lost updates when parallel agents /end simultaneously.
         // MEMORY.md lives at ~/.zeos/memory/<app_id>/MEMORY.md.
@@ -2132,11 +2171,68 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   throw new Error(`Unknown resource: ${uri}`);
 });
 
+// ═══════════════════════════════════════════════════════════════
+// CLI VERB DISPATCH (before the MCP server starts)
+// ═══════════════════════════════════════════════════════════════
+//
+// The inject binary is normally launched as a stdio MCP server. A PreCompact
+// hook, however, invokes it as a one-shot CLI: `index.js snap --session <id>
+// --handoff <text>`. We intercept that verb here, run the headless snap, and
+// exit WITHOUT connecting the MCP transport. Any unknown first arg falls
+// through to the MCP server, preserving existing behavior.
+
+function dispatchCliVerb(argv: string[]): boolean {
+  const verb = argv[0];
+  if (verb !== "snap") return false;
+
+  // Resolve a best-effort git snapshot from the pointer's project so the auto
+  // checkpoint matches a manual /snap. Failure is non-fatal (empty snapshot).
+  // We resolve the pointer once here only to find the app for the git snapshot;
+  // runHeadlessSnap re-resolves authoritatively and owns the no-op decision.
+  let gitSnapshot = "";
+  try {
+    const sid =
+      (() => {
+        const idx = argv.indexOf("--session");
+        return idx >= 0 && idx + 1 < argv.length ? argv[idx + 1] : null;
+      })() ?? currentSessionIdFromEnv();
+    if (sid) {
+      const pointer = resolveSessionPointer(sid);
+      if (pointer) {
+        const app = findProject(pointer.app_id);
+        if (app) gitSnapshot = getGitSnapshot(app);
+      }
+    }
+  } catch {
+    /* best-effort; never block a checkpoint on git resolution */
+  }
+
+  const result = runHeadlessSnap(argv.slice(1), { gitSnapshot });
+  if (result.status === "written") {
+    console.error(
+      `zeos auto-snap: wrote checkpoint to ${result.journalPath}` +
+        (result.redactions ? ` (${result.redactions} redacted)` : ""),
+    );
+  } else if (result.status === "noop") {
+    console.error(`zeos auto-snap: no-op (${result.reason})`);
+  } else {
+    console.error(`zeos auto-snap: error (${result.reason})`);
+  }
+  // A hook must never break the host: even an error exits 0 so PreCompact (and
+  // thus compaction) is never blocked by a failed auto-capture.
+  return true;
+}
+
 // Start server
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("zeos Inject MCP server v1.1.0 running on stdio");
+}
+
+if (dispatchCliVerb(process.argv.slice(2))) {
+  // CLI verb handled; do not start the MCP server.
+  process.exit(0);
 }
 
 main().catch(console.error);
