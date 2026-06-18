@@ -5,6 +5,8 @@ import {
   type MemoryEntry,
   type ParsedMemory,
 } from "./memory.js";
+import { atomicWriteFileSync, atomicWriteWithBackup, assertNoSecrets } from "./atomic-write.js";
+import { acquireMemoryLock, releaseMemoryLock } from "./memory-lock.js";
 
 export interface PromoteOptions {
   soulPath: string;
@@ -150,21 +152,68 @@ export function promoteMemoryEntryToSoul(opts: PromoteOptions): PromoteResult {
     return { promoted: false, dryRun: true, preview };
   }
 
-  // Real commit: write SOUL first (idempotent insert), then mark MEMORY entry
-  // promoted via the model so the marker round-trips through parseMemoryMd /
-  // formatMemoryMd and cannot be stripped by later curation or /end writes.
-  if (!alreadyInSoul) {
-    const headingEnd = (sectionMatch.index || 0) + sectionMatch[1].length;
-    const nextSectionIdx = soulOriginal.slice(headingEnd).search(/\n## /);
-    const insertAt = nextSectionIdx === -1 ? soulOriginal.length : headingEnd + nextSectionIdx;
-    const soulUpdated = soulOriginal.slice(0, insertAt) + doctrineBlock + soulOriginal.slice(insertAt);
-    fs.writeFileSync(opts.soulPath, soulUpdated);
+  // Real commit. The MEMORY read-modify-write (read -> set [promoted:true] ->
+  // write) must be serialized against a concurrent locked /end or
+  // zeos_memory_curate, or a stale read here would clobber their write and lose
+  // the promotion marker (the lost-update class). Hold the memory lock for the
+  // WHOLE MEMORY cycle, mirroring the curate handler in index.ts.
+  const lockAcquired = acquireMemoryLock(opts.memoryPath);
+  if (!lockAcquired) {
+    return {
+      promoted: false,
+      dryRun: false,
+      error:
+        "Could not acquire MEMORY.md lock (parallel write in progress). Retry the promote shortly.",
+    };
   }
 
-  if (!entry.promoted) {
-    entry.promoted = true;
-    fs.writeFileSync(opts.memoryPath, formatMemoryMd(parsed));
-  }
+  try {
+    // Re-read MEMORY INSIDE the held lock so the marker is applied to the
+    // freshest committed state (a concurrent /end may have added entries since
+    // the pre-lock read).
+    const freshContent = fs.readFileSync(opts.memoryPath, "utf-8");
+    const freshParsed = parseMemoryMd(freshContent);
+    const freshSelected = selectEntry(freshParsed, opts.entryDate, opts.entryTitle);
+    if ("error" in freshSelected) {
+      return { promoted: false, dryRun: false, error: freshSelected.error };
+    }
+    const freshEntry = freshSelected.entry;
 
-  return { promoted: true, dryRun: false };
+    // PREFLIGHT before SOUL is touched (atomicity of the two-file commit).
+    // SOUL is written first and has no .bak/rollback of its own, so if the
+    // paired MEMORY marker write later aborts, SOUL is already committed while
+    // MEMORY stays unmarked: a divergent, unrecoverable audit state. The only
+    // way that write aborts is the pre-existing-target redaction halt inside
+    // atomicWriteWithBackup (a legacy secret-shaped value already on disk in
+    // MEMORY). Assert the SAME gate here, inside the held lock and BEFORE the
+    // SOUL write, so a dirty MEMORY aborts the whole promote with SOUL untouched
+    // rather than half-committed. The marker mutation is in-memory and cannot
+    // introduce a new secret, so the only failure mode this needs to front-run
+    // is the dirty prior MEMORY.
+    assertNoSecrets(freshContent, "promote-preflight-memory", opts.memoryPath);
+
+    // Write SOUL first (idempotent insert). SOUL has no concurrent-writer
+    // contract of its own; the memory lock guards the marker write that pairs
+    // with it, and the preflight above guarantees the paired MEMORY write will
+    // not abort on a dirty prior file after SOUL is already committed.
+    if (!alreadyInSoul) {
+      const headingEnd = (sectionMatch.index || 0) + sectionMatch[1].length;
+      const nextSectionIdx = soulOriginal.slice(headingEnd).search(/\n## /);
+      const insertAt = nextSectionIdx === -1 ? soulOriginal.length : headingEnd + nextSectionIdx;
+      const soulUpdated = soulOriginal.slice(0, insertAt) + doctrineBlock + soulOriginal.slice(insertAt);
+      atomicWriteFileSync(opts.soulPath, soulUpdated);
+    }
+
+    // Write the marker through atomicWriteWithBackup so the promotion-marker
+    // write gets the same single-generation .bak snapshot as every other MEMORY
+    // mutation. The preflight already proved the prior MEMORY is clean.
+    if (!freshEntry.promoted) {
+      freshEntry.promoted = true;
+      atomicWriteWithBackup(opts.memoryPath, formatMemoryMd(freshParsed));
+    }
+
+    return { promoted: true, dryRun: false };
+  } finally {
+    releaseMemoryLock(opts.memoryPath);
+  }
 }

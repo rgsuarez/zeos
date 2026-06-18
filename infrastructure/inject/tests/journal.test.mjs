@@ -8,9 +8,20 @@ import {
   createJournalStub,
   extractJournalSummary,
 } from "../dist/lib/journal.js";
+import { RedactionAssertionError } from "../dist/lib/atomic-write.js";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "zeos-journal-test-"));
+}
+
+// Runtime-built secret-shaped string, never a static token literal (mirrors the
+// joinParts/padEnd technique used by redact.test.mjs).
+function joinParts(...parts) {
+  return parts.join("");
+}
+function secretShapedLine() {
+  const value = joinParts("a", "b", "c").padEnd(32, "x");
+  return `api_key="${value}"`;
 }
 
 test("createJournalStub: preserves full schema (schema_version, session_id, project, date, sequence, agent, instance, status, created)", () => {
@@ -67,6 +78,25 @@ test("createJournalStub: no carry-forward section when not provided", () => {
     const stub = createJournalStub(dir, "claude", { app_id: "demo" });
     const content = fs.readFileSync(path.join(dir, stub), "utf-8");
     assert(!content.includes("Carry-Forward from Previous Session"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("createJournalStub: a carry-forward carrying a secret-shaped token throws BEFORE the file is written", () => {
+  const dir = tempDir();
+  try {
+    // Carry-forward content is inherited from a prior session and could carry a
+    // secret-shaped token. The pre-write gate must reject it before the
+    // `{flag:"wx"}` write so no secret-shaped seed lands on disk.
+    const cf = `## Carry-Forward from Previous Session\n\n### Open Threads\n- leaked ${secretShapedLine()}\n`;
+    assert.throws(
+      () => createJournalStub(dir, "claude", { app_id: "demo" }, cf),
+      RedactionAssertionError,
+    );
+    // No journal file was created (the gate fired before the write).
+    const stubs = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith(".md")) : [];
+    assert.deepEqual(stubs, [], "no stub file is written when the redaction gate aborts");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
