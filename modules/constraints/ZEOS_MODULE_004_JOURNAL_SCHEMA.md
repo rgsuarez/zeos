@@ -53,7 +53,8 @@ YYYY-MM-DD-NNN-<agent>.md
 
 The agent name is the trailing component so parallel instances writing on the
 same day do not collide. There is **no topic slug**; the session topic lives in
-the journal body and frontmatter, not the filename.
+the journal body (the runtime emits no `topic` frontmatter field; see the
+Intentional-future note below and the required frontmatter in Section 2.1).
 
 ### 1.2 Component Specification
 
