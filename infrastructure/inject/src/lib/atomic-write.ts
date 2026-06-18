@@ -92,12 +92,29 @@ export function atomicWriteFileSync(
   // (1) Pre-write gate: never let secret-shaped bytes leave memory for disk.
   if (assertRedaction) assertNoSecrets(data, "pre-write", targetPath);
 
+  // Permission preservation: a fresh temp file is created under the process
+  // umask (0644 by default), and rename(tmp -> target) REPLACES the target's
+  // inode, so without this the new file would silently broaden a target that
+  // was tightened (e.g. a `chmod 600` MEMORY.md/SOUL.md). When the target
+  // already exists, capture its mode and re-apply it to the temp fd BEFORE the
+  // rename so the existing permission bits survive the swap. A brand-new file
+  // (no existing target) keeps the default umask perms.
+  let preservedMode: number | null = null;
+  try {
+    preservedMode = fs.statSync(targetPath).mode & 0o7777;
+  } catch {
+    /* no existing target; new file keeps default umask perms */
+  }
+
   const tmpPath = `${targetPath}.${crypto.randomBytes(8).toString("hex")}.tmp`;
   let fd: number | null = null;
   try {
     fd = fs.openSync(tmpPath, "w");
     fs.writeFileSync(fd, data);
     fs.fsyncSync(fd); // (2) bytes durable before they are named
+    // Apply the preserved mode to the fd before it becomes the live file, so
+    // the rename cannot broaden a previously-restricted target.
+    if (preservedMode !== null) fs.fchmodSync(fd, preservedMode);
     fs.closeSync(fd);
     fd = null;
 

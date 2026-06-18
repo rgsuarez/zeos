@@ -224,3 +224,63 @@ test("appendFileSyncDurable: a secret-shaped chunk is rejected before any byte i
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- atomicWriteFileSync: permission preservation on replace --------------
+
+test("atomicWriteFileSync: preserves the existing target's restrictive mode (0600) across the replace", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "MEMORY.md");
+    // A tightened file (e.g. operator ran `chmod 600` on MEMORY.md/SOUL.md).
+    fs.writeFileSync(target, "secret-ish but not token-shaped\n");
+    fs.chmodSync(target, 0o600);
+    assert.equal(fs.statSync(target).mode & 0o777, 0o600, "precondition: target is 0600");
+
+    atomicWriteFileSync(target, "new content, still private\n");
+
+    // The rename replaces the inode, so without preservation the new file would
+    // carry default umask perms (0644). The fix re-applies 0600 before rename.
+    assert.equal(
+      fs.statSync(target).mode & 0o777,
+      0o600,
+      "restrictive mode survives the atomic replace (not broadened to 0644)"
+    );
+    assert.equal(fs.readFileSync(target, "utf-8"), "new content, still private\n");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteFileSync: a brand-new file (no existing target) keeps default umask perms", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "NEW.md");
+    atomicWriteFileSync(target, "fresh file\n");
+    // No prior inode to preserve; mode is whatever the umask yields (commonly
+    // 0644). Assert it is NOT the restrictive 0600 a preserved file would carry,
+    // proving preservation only triggers when a target already exists.
+    assert.notEqual(fs.statSync(target).mode & 0o777, 0o600, "new file is not forced to 0600");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteWithBackup: preserves the prior file's 0600 mode on the rewritten target", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "MEMORY.md");
+    fs.writeFileSync(target, "prior private generation\n");
+    fs.chmodSync(target, 0o600);
+
+    atomicWriteWithBackup(target, "new private generation\n");
+
+    assert.equal(
+      fs.statSync(target).mode & 0o777,
+      0o600,
+      "the rewritten target keeps the prior restrictive mode"
+    );
+    assert.equal(fs.readFileSync(target, "utf-8"), "new private generation\n");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
