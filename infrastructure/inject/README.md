@@ -41,9 +41,10 @@ hand - it also holds project state and history; merge the entry with the
 ```json
 {
   "mcpServers": {
-    "inject": {
-      "command": "node",
-      "args": ["/path/to/inject/dist/index.js"]
+    "zeos": {
+      "type": "stdio",
+      "command": "/path/to/zeos/infrastructure/inject/bin/launch",
+      "args": []
     }
   }
 }
@@ -54,9 +55,10 @@ Or create a project-local `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "inject": {
-      "command": "node",
-      "args": ["~/projects/inject/dist/index.js"]
+    "zeos": {
+      "type": "stdio",
+      "command": "~/projects/zeos/infrastructure/inject/bin/launch",
+      "args": []
     }
   }
 }

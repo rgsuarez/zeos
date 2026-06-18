@@ -69,7 +69,7 @@ Intentional-future note below and the required frontmatter in Section 2.1).
 ### 1.3 Naming Rules
 
 1. **Date Component**: MUST use UTC date at session start (`new Date().toISOString().split("T")[0]`)
-2. **Sequence Number**: MUST increment per day, zero-padded, starting at `001`; the runtime probes `001`-`999` and uses exclusive-create (`flag: "wx"`) so a collision advances to the next free sequence
+2. **Sequence Number**: MUST increment per agent per day, zero-padded, starting at `001`; the runtime probes `001`-`999` against the writing agent's own filename and uses exclusive-create (`flag: "wx"`) so a collision advances to the next free sequence. Because the probe filename includes the agent, sequences are scoped to date plus agent (not a single global per-day counter): each agent's first session on a given date is `001`
 3. **Agent Component**: the writing agent's name (e.g. `claude`, `gemini`, `codex`), used to keep concurrent instances in distinct files
 
 ### 1.4 Examples
@@ -77,7 +77,8 @@ Intentional-future note below and the required frontmatter in Section 2.1).
 **Valid:**
 ```
 2026-06-18-001-claude.md
-2026-06-18-002-gemini.md
+2026-06-18-002-claude.md
+2026-06-18-001-gemini.md
 2026-06-19-001-codex.md
 ```
 
