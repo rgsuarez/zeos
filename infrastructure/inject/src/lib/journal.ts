@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { expandPath } from "../path-resolver.js";
 import { extractListItems, filterPlaceholders } from "./digest.js";
 import { estimateTokens } from "./memory.js";
+import { appendFileSyncDurable } from "./atomic-write.js";
 
 export const JOURNAL_SCHEMA_VERSION = "2.0.0";
 // Single source of truth for "is this journal body real work, not a stub".
@@ -277,9 +278,12 @@ export function checkParallelInstances(journalDir: string, currentAgent?: string
 // -- /end append-only --------------------------------------------------------
 
 // Append-only finalization: the `## Session End` block IS the completion marker.
-// Never rewrites the file or flips frontmatter status.
+// Never rewrites the file or flips frontmatter status. Durable (append + fsync)
+// for torn-append protection, with a pre-append redaction gate so a
+// secret-shaped block never reaches the append-only file (where a post-write
+// throw would be too late).
 export function appendSessionEnd(journalPath: string, endEntry: string): void {
-  fs.appendFileSync(journalPath, endEntry);
+  appendFileSyncDurable(journalPath, endEntry);
 }
 
 // -- continuation load chain -------------------------------------------------

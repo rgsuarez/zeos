@@ -5,6 +5,7 @@ import {
   type MemoryEntry,
   type ParsedMemory,
 } from "./memory.js";
+import { atomicWriteFileSync } from "./atomic-write.js";
 
 export interface PromoteOptions {
   soulPath: string;
@@ -158,12 +159,12 @@ export function promoteMemoryEntryToSoul(opts: PromoteOptions): PromoteResult {
     const nextSectionIdx = soulOriginal.slice(headingEnd).search(/\n## /);
     const insertAt = nextSectionIdx === -1 ? soulOriginal.length : headingEnd + nextSectionIdx;
     const soulUpdated = soulOriginal.slice(0, insertAt) + doctrineBlock + soulOriginal.slice(insertAt);
-    fs.writeFileSync(opts.soulPath, soulUpdated);
+    atomicWriteFileSync(opts.soulPath, soulUpdated);
   }
 
   if (!entry.promoted) {
     entry.promoted = true;
-    fs.writeFileSync(opts.memoryPath, formatMemoryMd(parsed));
+    atomicWriteFileSync(opts.memoryPath, formatMemoryMd(parsed));
   }
 
   return { promoted: true, dryRun: false };

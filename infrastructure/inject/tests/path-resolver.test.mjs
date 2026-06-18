@@ -99,6 +99,46 @@ test("verifyJournalWritten: throws for missing file", () => {
   );
 });
 
+// Runtime-built secret-shaped string, never a static token literal.
+function secretShapedLine() {
+  const value = ["a", "b", "c"].join("").padEnd(32, "x");
+  return `api_key="${value}"`;
+}
+
+test("verifyJournalWritten: a clean journal passes the readback redaction gate", () => {
+  const tmp = path.join(os.tmpdir(), `inject-test-clean-${Date.now()}.md`);
+  fs.writeFileSync(tmp, "## Session End\nordinary recap, no secrets.\n");
+  try {
+    assert.doesNotThrow(() => verifyJournalWritten(tmp));
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("verifyJournalWritten: an unredacted secret on disk fails the readback gate", () => {
+  const tmp = path.join(os.tmpdir(), `inject-test-leak-${Date.now()}.md`);
+  fs.writeFileSync(tmp, `## Session End\nleaked ${secretShapedLine()}\n`);
+  try {
+    assert.throws(
+      () => verifyJournalWritten(tmp),
+      /unredacted secret-shaped/i,
+    );
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
+test("verifyJournalWritten: a journal carrying only redaction MARKERS still passes", () => {
+  const tmp = path.join(os.tmpdir(), `inject-test-marker-${Date.now()}.md`);
+  // An already-redacted marker must not be re-flagged (idempotent redaction).
+  fs.writeFileSync(tmp, '## Session End\napi_key="[REDACTED:ENV_SECRET]"\n');
+  try {
+    assert.doesNotThrow(() => verifyJournalWritten(tmp));
+  } finally {
+    fs.unlinkSync(tmp);
+  }
+});
+
 test("resolveJournalPath: clone_path does not affect zeos-side journal root", () => {
   const app = {
     app_id: "zero-echelon",

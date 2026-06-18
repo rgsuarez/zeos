@@ -92,6 +92,16 @@ import {
 } from "./lib/digest.js";
 import { findMemoryByTags } from "./lib/memory-find.js";
 import { promoteMemoryEntryToSoul } from "./lib/soul-promote.js";
+import {
+  atomicWriteFileSync,
+  atomicWriteWithBackup,
+  appendFileSyncDurable,
+  RedactionAssertionError,
+} from "./lib/atomic-write.js";
+import {
+  acquireMemoryLock,
+  releaseMemoryLock,
+} from "./lib/memory-lock.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -157,52 +167,6 @@ function readJson(filePath: string): any {
   } catch (e) {
     return null;
   }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// FILESYSTEM LOCK (for MEMORY.md concurrent writes)
-// ═══════════════════════════════════════════════════════════════
-
-const LOCK_STALE_MS = 30_000;  // 30s — auto-remove orphaned locks
-const LOCK_RETRY_MAX = 5;
-const LOCK_RETRY_BASE_MS = 500;
-
-function acquireMemoryLock(memoryPath: string): boolean {
-  const lockPath = memoryPath + '.lock';
-  for (let attempt = 0; attempt < LOCK_RETRY_MAX; attempt++) {
-    try {
-      // O_CREAT|O_EXCL — atomic create, fails if lock exists
-      fs.writeFileSync(lockPath, `${process.pid}\n${new Date().toISOString()}`, { flag: 'wx' });
-      return true;
-    } catch (e: any) {
-      if (e.code === 'EEXIST') {
-        // Lock held — check if stale
-        try {
-          const lockContent = fs.readFileSync(lockPath, 'utf-8');
-          const lockTime = new Date(lockContent.split('\n')[1]).getTime();
-          if (Date.now() - lockTime > LOCK_STALE_MS) {
-            fs.unlinkSync(lockPath);  // Remove stale lock
-            continue;  // Retry immediately
-          }
-        } catch { /* lock file unreadable — treat as stale */
-          try { fs.unlinkSync(lockPath); } catch {}
-          continue;
-        }
-        // Lock is fresh — wait with jitter and retry
-        const jitter = LOCK_RETRY_BASE_MS + Math.floor(Math.random() * 500);
-        const { execSync } = require('child_process');
-        execSync(`sleep ${jitter / 1000}`);
-        continue;
-      }
-      throw e;  // Unexpected error
-    }
-  }
-  return false;  // Could not acquire after retries
-}
-
-function releaseMemoryLock(memoryPath: string): void {
-  const lockPath = memoryPath + '.lock';
-  try { fs.unlinkSync(lockPath); } catch {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1243,7 +1207,11 @@ ${formatRedactionNotice(redactions)}
 ---
 `;
 
-        fs.appendFileSync(journalPath, snapEntry);
+        // Durable append (append + fsync) with a pre-append redaction gate, so
+        // a torn write cannot leave a partial checkpoint and no secret-shaped
+        // byte reaches the append-only journal. verifyJournalWritten then
+        // re-asserts the full file on readback.
+        appendFileSyncDurable(journalPath, snapEntry);
         verifyJournalWritten(journalPath);
 
         const redactionSummary = redactions.count > 0
@@ -1438,15 +1406,21 @@ ${formatRedactionNotice(redactions)}
               // Auto-curate if over token limit
               const { curated, movedEntries } = curateMemory(parsed, tokenLimit);
 
+              // Two-file move ordering: write the DESTINATION (ARCHIVE, which
+              // gains the moved entries) BEFORE the SOURCE (MEMORY, which loses
+              // them). A crash between the two then leaves a moved entry in BOTH
+              // files (a duplicate, collapsed by dedupe-on-load) rather than in
+              // NEITHER (a loss). Both writes are crash-safe atomic.
               if (movedEntries.length > 0) {
                 curationMessage = `\nAuto-curated: ${movedEntries.length} entries moved to MEMORY_ARCHIVE.md (token limit: ${tokenLimit})`;
 
-                // Write/update archive file
-                fs.writeFileSync(archivePath, formatMemoryMd(curated, 'archive'));
+                // Write/update archive file (destination first).
+                atomicWriteFileSync(archivePath, formatMemoryMd(curated, 'archive'));
               }
 
-              // Write updated MEMORY.md (active entries only + digest)
-              fs.writeFileSync(memoryPath, formatMemoryMd(curated));
+              // Write updated MEMORY.md (active entries only + digest), with a
+              // single-generation .bak snapshot of the prior clean MEMORY.md.
+              atomicWriteWithBackup(memoryPath, formatMemoryMd(curated));
             } else {
               // Create new MEMORY.md with proper format
               const digest = generateContinuityDigest(
@@ -1479,8 +1453,22 @@ ${formatRedactionNotice(redactions)}
                 archivedEntries: [],
                 continuityDigest: formatContinuityDigest(digest)
               };
-              fs.writeFileSync(memoryPath, formatMemoryMd(newMemory));
+              atomicWriteWithBackup(memoryPath, formatMemoryMd(newMemory));
             }
+          }
+        } catch (e) {
+          if (e instanceof RedactionAssertionError) {
+            // The journal is already durably saved; the MEMORY.md update is
+            // best-effort. A redaction halt here means the existing MEMORY.md
+            // (or the content about to be written) carries secret-shaped bytes,
+            // which is an incident, not a recoverable edge: surface it loudly
+            // and skip the MEMORY.md write rather than persist a leak.
+            curationMessage =
+              `\nWARNING: MEMORY.md update SKIPPED, redaction assertion failed ` +
+              `(${e.count} secret-shaped value(s)). The session journal was saved; ` +
+              `inspect and clean ${memoryPath} before the next /end.`;
+          } else {
+            throw e;
           }
         } finally {
           if (lockAcquired) {
@@ -1609,6 +1597,29 @@ ${recovered ? `\nRecovered from a tool-grammar-leaked payload; tags stripped fro
           return { content: [{ type: "text", text: `Error: No MEMORY.md found for ${project}` }], isError: true };
         }
 
+        // Mutating actions perform a read-modify-write across MEMORY.md (and
+        // sometimes MEMORY_ARCHIVE.md). Hold the memory lock for the WHOLE cycle
+        // (read -> parse -> mutate -> write both files), not just the write, so a
+        // stale read cannot clobber a concurrent /end (lost update). Read-only
+        // actions (stats/list/find) take no lock.
+        const CURATE_MUTATING_ACTIONS = new Set(["pin", "unpin", "delete", "promote", "merge"]);
+        const isMutating = CURATE_MUTATING_ACTIONS.has(action.toLowerCase());
+
+        let curateLockAcquired = false;
+        if (isMutating) {
+          curateLockAcquired = acquireMemoryLock(memoryPath);
+          if (!curateLockAcquired) {
+            return {
+              content: [{ type: "text", text: "Error: Could not acquire MEMORY.md lock (parallel write in progress). Retry the curate action shortly." }],
+              isError: true,
+            };
+          }
+        }
+
+        try {
+        // Read INSIDE the held lock for mutating actions, so the parsed state is
+        // the freshest committed state at mutate time. parseMemoryMd dedupes any
+        // crash-between-files duplicate on load.
         const content = fs.readFileSync(memoryPath, 'utf-8');
         const archiveContent = fs.existsSync(archivePath) ? fs.readFileSync(archivePath, 'utf-8') : "";
         const parsed = parseMemoryMd(content, archiveContent);
@@ -1690,7 +1701,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             entry.decay = Math.max(entry.decay, MEMORY_ENTRY_DECAY_DEFAULT);
             entry.importance = 5;
             entry.tags = [...new Set([...(entry.tags || []), "pinned"])];
-            fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
+            atomicWriteWithBackup(memoryPath, formatMemoryMd(parsed));
             result = `✓ Pinned entry ${targetDate} (importance set to 5)`;
             break;
           }
@@ -1706,7 +1717,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             }
             entry.importance = MEMORY_ENTRY_IMPORTANCE_DEFAULT;
             entry.tags = (entry.tags || []).filter(t => t !== "pinned");
-            fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
+            atomicWriteWithBackup(memoryPath, formatMemoryMd(parsed));
             result = `✓ Unpinned entry ${targetDate} (importance reset to ${MEMORY_ENTRY_IMPORTANCE_DEFAULT})`;
             break;
           }
@@ -1725,12 +1736,12 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
 
             if (activeIndex !== -1) {
               parsed.entries.splice(activeIndex, 1);
-              fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
+              atomicWriteWithBackup(memoryPath, formatMemoryMd(parsed));
               result = `✓ Deleted entry ${targetDate} from MEMORY.md`;
             } else {
               parsed.archivedEntries.splice(archiveIndex, 1);
               if (parsed.archivedEntries.length > 0) {
-                fs.writeFileSync(archivePath, formatMemoryMd(parsed, 'archive'));
+                atomicWriteFileSync(archivePath, formatMemoryMd(parsed, 'archive'));
               } else if (fs.existsSync(archivePath)) {
                 fs.unlinkSync(archivePath);
               }
@@ -1754,10 +1765,14 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             entry.importance = Math.max(entry.importance, MEMORY_ENTRY_IMPORTANCE_DEFAULT);
             parsed.entries.push(entry);
 
-            // Write both files
-            fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
+            // Two-file move ordering: this promotes archive -> active, so the
+            // DESTINATION is MEMORY (gains the entry) and the SOURCE is ARCHIVE
+            // (loses it). Write MEMORY (destination) FIRST, then ARCHIVE
+            // (source), so a crash between leaves the entry in BOTH files (a
+            // duplicate, collapsed by dedupe-on-load) rather than in NEITHER.
+            atomicWriteWithBackup(memoryPath, formatMemoryMd(parsed));
             if (parsed.archivedEntries.length > 0) {
-              fs.writeFileSync(archivePath, formatMemoryMd(parsed, 'archive'));
+              atomicWriteFileSync(archivePath, formatMemoryMd(parsed, 'archive'));
             } else if (fs.existsSync(archivePath)) {
               // Remove empty archive file
               fs.unlinkSync(archivePath);
@@ -1800,7 +1815,7 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             if (idx2 !== -1) parsed.entries.splice(idx2, 1);
             parsed.entries.unshift(mergedEntry);
 
-            fs.writeFileSync(memoryPath, formatMemoryMd(parsed));
+            atomicWriteWithBackup(memoryPath, formatMemoryMd(parsed));
             result = `✓ Merged entries ${date1} and ${date2} into single entry`;
             break;
           }
@@ -1810,6 +1825,11 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
         }
 
         return { content: [{ type: "text", text: result }] };
+        } finally {
+          if (curateLockAcquired) {
+            releaseMemoryLock(memoryPath);
+          }
+        }
       }
 
       case "zeos_soul_promote": {

@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
+import { redactSensitiveText } from "./lib/redact.js";
 
 /**
  * Zeos root paths.
@@ -176,5 +177,18 @@ export function resolveProjectClaudeMdPath(app: PathResolverApp): string {
 export function verifyJournalWritten(absolutePath: string): void {
   if (!fs.existsSync(absolutePath)) {
     throw new Error(`Journal write verification failed: file does not exist at ${absolutePath}`);
+  }
+  // Post-write readback redaction gate: prove the file that just landed on disk
+  // carries no unredacted secret-shaped bytes. redactSensitiveText is idempotent
+  // against existing [REDACTED:...] markers, so a count above zero means a real
+  // secret survived the pre-write redaction and reached the journal.
+  const onDisk = fs.readFileSync(absolutePath, "utf-8");
+  const { count, labels } = redactSensitiveText(onDisk);
+  if (count > 0) {
+    const labelSuffix = labels.length > 0 ? ` (${labels.join(", ")})` : "";
+    throw new Error(
+      `Journal write verification failed: ${count} unredacted secret-shaped ` +
+        `value(s)${labelSuffix} reached disk at ${absolutePath}.`
+    );
   }
 }
