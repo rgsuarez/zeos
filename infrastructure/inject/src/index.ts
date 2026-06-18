@@ -94,7 +94,7 @@ import {
 } from "./lib/digest.js";
 import { findMemoryByTags } from "./lib/memory-find.js";
 import { promoteMemoryEntryToSoul } from "./lib/soul-promote.js";
-import { rebuildMemoryFromJournals } from "./lib/memory-rebuild.js";
+import { rebuildMemoryFromJournals, commitRebuild } from "./lib/memory-rebuild.js";
 import {
   atomicWriteFileSync,
   atomicWriteWithBackup,
@@ -2064,26 +2064,12 @@ ${parsed.archivedEntries.length > 5 ? `\n... and ${parsed.archivedEntries.length
             };
           }
 
-          // Two-file ordering (mirrors /end): write the ARCHIVE (destination)
-          // before MEMORY (source) so a crash between them leaves a duplicate
-          // (collapsed by dedupe-on-load) rather than a loss. Both are crash-safe.
-          if (result.rebuilt.archivedEntries.length > 0) {
-            atomicWriteFileSync(archivePath, formatMemoryMd(result.rebuilt, "archive"));
-          }
-          atomicWriteWithBackup(memoryPath, formatMemoryMd(result.rebuilt));
-
-          // Remove a now-stale MEMORY_ARCHIVE.md when the rebuild produced no
-          // archived entries. Without this, a pre-existing archive holding
-          // entries the rebuild no longer reproduces (the unrecoverable case)
-          // would survive on disk and silently resurrect on the next load via
-          // dedupe-on-load, contradicting the regenerable-view contract and the
-          // diff the operator just approved. Done AFTER the MEMORY write so the
-          // archive-first crash-safety ordering above is preserved (a crash
-          // before this unlink leaves a harmless empty/duplicate archive, never
-          // a loss). Mirrors the delete/promote convention.
-          if (result.rebuilt.archivedEntries.length === 0 && fs.existsSync(archivePath)) {
-            fs.unlinkSync(archivePath);
-          }
+          // Crash-safe two-file commit (archive-first for the non-zero case,
+          // stale-archive-unlink-before-MEMORY for the zero case). Centralized in
+          // commitRebuild so the write ordering is one tested invariant, not a
+          // per-call-site re-implementation. Caller has already verified canCommit
+          // and holds the MEMORY lock.
+          commitRebuild(result.rebuilt, memoryPath, archivePath);
 
           return {
             content: [{ type: "text", text: formatRebuildCommit(project, result) }],
