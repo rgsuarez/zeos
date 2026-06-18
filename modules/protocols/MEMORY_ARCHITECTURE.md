@@ -1,9 +1,9 @@
 ---
 protocol_id: "memory-architecture"
 protocol_type: "core"
-version: "2.0.0"
+version: "2.1.0"
 created: "2026-01-13"
-updated: "2026-02-02"
+updated: "2026-06-18"
 author: "Claude (system) per Operator directive"
 status: "active"
 authority: "Operator directive 2026-01-13"
@@ -137,11 +137,11 @@ The Memory Architecture defines:
 - What's the current plan? (Blueprint)
 - What decisions were made? (Decision anchors in journals)
 
-**Loading Rules:**
-- Always load latest journal
-- If latest journal indicates "continuation," also load prior journal
-- If `active_blueprint` is set in ROADMAP, load blueprint
-- Summarize if full content exceeds token budget
+**Loading Rules (per the Inject MCP runtime, `infrastructure/inject/src/lib/journal.ts`):**
+- **Latest** = the newest *substantive* journal, skipping unworked stubs (`getLatestJournalMeta`). A newer interrupted-but-substantive journal is still the latest and is not shadowed by an older completed one. The latest journal is always rendered verbatim.
+- **Continuation** = also load one budgeted prior journal when the latest substantive session was **interrupted** (no `## Session End:` block) **OR** ended cleanly with non-empty `### Next Actions` (`shouldLoadPrior`). The prior is resolved via the `previous_session` link first, else the next-older substantive journal; the chain is capped at two full journals (latest + one prior).
+- If `active_blueprint` is set in ROADMAP, load blueprint.
+- The prior journal is budgeted: rendered verbatim if under budget, else summarized, else truncated. The latest is never summarized.
 
 ---
 
@@ -219,7 +219,7 @@ USER OPENS CHANNEL / RUNS /project
 │                                                                │
 │  ═══ TIER 2 RECONSTRUCTION (Mid-Term) ═══                     │
 │                                                                │
-│  G8: Load latest session journal                               │
+│  G8: Load latest SUBSTANTIVE journal (+ prior if continuation) │
 │      → Agent knows WHAT HAPPENED BEFORE                        │
 │                                                                │
 │  G9: Load active blueprint (if set)                            │
@@ -534,7 +534,8 @@ paths:
 |---------|------|---------|
 | 1.0.0 | 2026-01-13 | Initial protocol — three-tier model formalized |
 | 2.0.0 | 2026-02-02 | Added MEMORY.md file format, decay scores, auto-curation |
+| 2.1.0 | 2026-06-18 | Reconciled Tier 2 journal loading rules to the runtime: latest = newest substantive journal (stub-skipping); continuation = interrupted OR open Next Actions, via `previous_session` link, capped at two journals. |
 
 ---
 
-*MEMORY_ARCHITECTURE.md v2.0.0 — "Memory is not optional. It is the innovation."*
+*MEMORY_ARCHITECTURE.md v2.1.0 - "Memory is not optional. It is the innovation."*
