@@ -32,7 +32,11 @@ Inject is an MCP (Model Context Protocol) server that compiles zeos context into
 
 ### Claude Code
 
-Add to `~/.claude/settings.json`:
+Claude Code reads user-scope MCP servers from `~/.claude.json` under the
+top-level `mcpServers` key (the installer `tools/install.sh` writes this file,
+plus `~/.mcp.json` for compatibility). Do not overwrite `~/.claude.json` by
+hand - it also holds project state and history; merge the entry with the
+`claude` CLI or the installer. The entry shape:
 
 ```json
 {
