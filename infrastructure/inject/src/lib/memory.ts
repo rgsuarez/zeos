@@ -140,20 +140,45 @@ function parseEntries(content: string, isArchived: boolean): MemoryEntry[] {
 }
 
 /**
- * Stable identity for a memory entry, used to detect the same logical entry
- * appearing in BOTH MEMORY.md and MEMORY_ARCHIVE.md after a crash between the
- * two-file writes of a curation move/promotion.
+ * Stable addressable handle for a memory entry. Primary key is the Source
+ * Journal path embedded in the entry body (unique per captured session); it
+ * survives active <-> archive moves unchanged. When an entry has no Source
+ * Journal line (older entries, merged entries), the key falls back to
+ * `date::title`, the same pair the curate/promote/delete actions already treat
+ * as the addressable handle.
  *
- * Primary key is the Source Journal path embedded in the entry body (unique per
- * captured session); it survives active <-> archive moves unchanged. When an
- * entry has no Source Journal line (older entries, merged entries), the key
- * falls back to `date::title`, which is the same pair the curate/promote/delete
- * actions already treat as the addressable handle.
+ * NOTE: this handle is NOT safe as a dedup key, because the `date::title`
+ * fallback is not unique (two distinct legacy entries can share a date and
+ * title). Crash-between-files dedup uses `durableMemoryEntryIdentity` instead,
+ * which returns null for entries lacking a unique id so they are never
+ * collapsed. This function stays the addressable handle (used by tests and
+ * curate addressing).
  */
 export function memoryEntryIdentity(entry: MemoryEntry): string {
+  const durable = durableMemoryEntryIdentity(entry);
+  if (durable) return durable;
+  return `dt::${entry.date}::${entry.title}`;
+}
+
+/**
+ * DURABLE-ONLY identity used for crash-between-files dedup. Returns a unique
+ * id derived from the Source Journal path (which every crash-between duplicate
+ * shares, because the two-file move copies the same entry body to both files),
+ * or null when the entry has no such durable unique id.
+ *
+ * Fail-closed-on-ambiguity: an entry with no Source Journal has no proven
+ * unique identity, so it is NEVER collapsed against another entry on date+title
+ * alone. Two distinct legacy/manual entries that happen to share a date and
+ * title (e.g. two same-day decisions with no captured journal) must BOTH
+ * survive parse; silently dropping the later one would be data loss. The only
+ * duplicate this dedup is built to collapse, a crash between the destination
+ * and source writes of a curation move, always carries the same Source Journal
+ * pointer in both copies, so it still dedupes correctly.
+ */
+export function durableMemoryEntryIdentity(entry: MemoryEntry): string | null {
   const sourceMatch = entry.content.match(/### Source Journal\n([^\n]+)/);
   if (sourceMatch) return `journal::${sourceMatch[1].trim()}`;
-  return `dt::${entry.date}::${entry.title}`;
+  return null;
 }
 
 /**
@@ -162,13 +187,21 @@ export function memoryEntryIdentity(entry: MemoryEntry): string {
  * second) guarantees a crash leaves an entry in BOTH files rather than NEITHER;
  * this collapses that recoverable duplicate on load.
  *
- * Rule: if an identity appears in both lists, the ACTIVE copy wins and the
- * archived copy is dropped. Rationale: every crash-between window in this code
- * has the active list as the authoritative destination state (an end-session
- * curation has already removed the moved entry from active intent; a
- * /memory-curate promote has already added it to active intent), so keeping
- * active and dropping the archived shadow converges to the intended post-move
- * state. De-dup within a single list keeps the first occurrence.
+ * Rule: if a DURABLE identity (Source Journal pointer) appears in both lists,
+ * the ACTIVE copy is kept and the archived copy is dropped. Rationale: for
+ * archive-first auto-curate the active list is the SOURCE the moved entry is
+ * leaving (the destination is the archive that gained it), but the
+ * duplicate-over-loss recovery deliberately keeps the entry in active and lets
+ * the archived intent converge on the next curate, so a crash never loses the
+ * entry. (The /memory-curate promote path adds the entry to active first, so
+ * keeping active is also correct there.) Either way, keeping active and
+ * dropping the archived shadow is the safe, lossless convergence.
+ *
+ * Fail-closed-on-ambiguity: only entries that share a DURABLE unique id are
+ * collapsed. Entries with no durable id (no Source Journal pointer) are never
+ * deduped on date+title alone, so two distinct legacy/manual same-date,
+ * same-title entries both survive. De-dup within a single list keeps the first
+ * occurrence.
  */
 export function dedupeMemoryEntries(parsed: ParsedMemory): { removed: number } {
   let removed = 0;
@@ -177,12 +210,14 @@ export function dedupeMemoryEntries(parsed: ParsedMemory): { removed: number } {
     const seen = new Set<string>();
     const out: MemoryEntry[] = [];
     for (const entry of list) {
-      const id = memoryEntryIdentity(entry);
-      if (seen.has(id)) {
+      const id = durableMemoryEntryIdentity(entry);
+      // Only entries with a durable unique id are dedup candidates; an entry
+      // lacking one is never collapsed (it has no proven duplicate).
+      if (id !== null && seen.has(id)) {
         removed += 1;
         continue;
       }
-      seen.add(id);
+      if (id !== null) seen.add(id);
       out.push(entry);
     }
     return out;
@@ -191,11 +226,18 @@ export function dedupeMemoryEntries(parsed: ParsedMemory): { removed: number } {
   parsed.entries = dedupeWithin(parsed.entries);
   parsed.archivedEntries = dedupeWithin(parsed.archivedEntries);
 
-  const activeIds = new Set(parsed.entries.map(memoryEntryIdentity));
-  const archiveBefore = parsed.archivedEntries.length;
-  parsed.archivedEntries = parsed.archivedEntries.filter(
-    e => !activeIds.has(memoryEntryIdentity(e))
+  const activeIds = new Set(
+    parsed.entries
+      .map(durableMemoryEntryIdentity)
+      .filter((id): id is string => id !== null)
   );
+  const archiveBefore = parsed.archivedEntries.length;
+  parsed.archivedEntries = parsed.archivedEntries.filter(e => {
+    const id = durableMemoryEntryIdentity(e);
+    // Drop an archived shadow only when its durable id is also present in
+    // active. A null-id archived entry is always retained.
+    return id === null || !activeIds.has(id);
+  });
   removed += archiveBefore - parsed.archivedEntries.length;
 
   return { removed };
