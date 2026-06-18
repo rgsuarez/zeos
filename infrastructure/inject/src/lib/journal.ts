@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { expandPath } from "../path-resolver.js";
 import { extractListItems, filterPlaceholders } from "./digest.js";
 import { estimateTokens } from "./memory.js";
-import { appendFileSyncDurable } from "./atomic-write.js";
+import { appendFileSyncDurable, assertNoSecrets } from "./atomic-write.js";
 
 export const JOURNAL_SCHEMA_VERSION = "2.0.0";
 // Single source of truth for "is this journal body real work, not a stub".
@@ -206,6 +206,14 @@ previous_session: ${previousSessionValue}
     if (carryForward && carryForward.trim()) {
       stub += `${carryForward.trim()}\n\n---\n\n`;
     }
+
+    // Pre-write redaction gate: carry-forward content is derived from a prior
+    // session and could carry a secret-shaped token, and the `{flag:"wx"}`
+    // write below is the atomicity primitive (a post-write throw would be too
+    // late on a just-created file). Assert the full stub is clean BEFORE the
+    // write so a secret-shaped seed never lands on disk. Throws
+    // RedactionAssertionError on a hit.
+    assertNoSecrets(stub, "pre-write", stubPath);
 
     try {
       fs.writeFileSync(stubPath, stub, { flag: "wx" });
