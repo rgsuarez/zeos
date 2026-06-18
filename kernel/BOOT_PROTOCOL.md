@@ -289,12 +289,13 @@ Ghost mode sessions:
 - Parallel observation while another agent works
 - Investigating project state without side effects
 
-**Why Immediate Commit:**
+**Why Immediate Write:**
 
-The stub must be committed (not just written locally) so that:
-- Other instances pulling will see it
-- Parallel detection works across machines
-- Instance is visible even if session crashes before first checkpoint
+The stub is written immediately to the state root (`~/.zeos/journals/<app_id>/`,
+gitignored and never git-committed) so that:
+- Parallel detection on this machine sees the active instance from boot
+- Instance is visible even if the session crashes before its first checkpoint
+- A reused unworked stub keeps the same agent in a single file rather than spawning duplicates
 
 **Stub Lifecycle (append-only; frontmatter `status` stays `active` throughout):**
 
