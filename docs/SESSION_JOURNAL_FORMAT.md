@@ -1,15 +1,34 @@
 ---
 document: "SESSION_JOURNAL_FORMAT"
 version: "1.0.0"
-status: "ACTIVE"
+status: "SUPERSEDED"
 created: "2025-12-17"
+superseded: "2026-06-18"
+superseded_by: "modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md"
 author: "Claude (Architect)"
 authority: "Operator"
-module_type: "constraint"
+module_type: "reference"
 load_priority: 5
 ---
 
 # Session Journal Format Specification
+
+> **SUPERSEDED (2026-06-18) by
+> [`modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md`](../modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md).**
+> This document described an earlier, richer hybrid journal schema
+> (`status: ACTIVE|COMPLETE|INTERRUPTED|CHECKPOINT`, `continued_in`, structured
+> `decisions`/`state_changes`/`open_items` YAML) that the Inject MCP runtime
+> never implemented and that conflicted with the binding ZEOS_MODULE_004
+> constraint. To avoid two competing schema sources of truth, ZEOS_MODULE_004
+> (v2.0.0, runtime-reconciled) is now the single binding journal schema. The
+> runtime emits a flat frontmatter (`schema_version, session_id, project, date,
+> sequence, agent, instance, status, created, previous_session`), uses the
+> filename `YYYY-MM-DD-NNN-<agent>.md`, and finalizes by appending a
+> `## Session End:` block (append-only; `status` stays `active`).
+>
+> This file is retained for historical reference and design intent only. It is
+> **not** a binding constraint and is no longer loaded as one. Do not implement
+> against the schema below; follow ZEOS_MODULE_004.
 
 ## Purpose
 
@@ -365,8 +384,9 @@ The Markdown body provides the reasoning context that helps the agent understand
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0.0 | 2025-12-17 | Claude (Architect) | Initial specification |
+| - | 2026-06-18 | - | Superseded by `modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md` (v2.0.0). Retained as historical reference; no longer a binding constraint. |
 
 ---
 
-*This format specification is a zeos kernel document.*
-*Changes require Operator approval.*
+*This document is superseded. The binding journal schema is*
+*`modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md`.*
