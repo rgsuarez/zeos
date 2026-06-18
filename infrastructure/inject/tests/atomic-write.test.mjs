@@ -339,3 +339,93 @@ test("atomicWriteWithBackup: a second backup of a 0600 target keeps the .bak at 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- appendFileSyncDurable: O_NOFOLLOW symlink refusal + create-mode ---------
+// The symlink cases skip where O_NOFOLLOW is unavailable (e.g. Windows), where
+// the open degrades to following the symlink by design.
+
+const NOFOLLOW_SKIP = (fs.constants.O_NOFOLLOW ?? 0) === 0 && "O_NOFOLLOW unsupported on this platform";
+
+test("appendFileSyncDurable: no-create arm appends to an existing regular file (no behavior change)", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "journal.md");
+    fs.writeFileSync(target, "line one\n");
+    appendFileSyncDurable(target, "line two\n", { createIfMissing: false });
+    assert.equal(fs.readFileSync(target, "utf-8"), "line one\nline two\n", "no-create arm still appends");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendFileSyncDurable: no-create arm refuses a symlink final component with ELOOP, target unwritten", { skip: NOFOLLOW_SKIP }, () => {
+  const dir = mkTmpDir();
+  try {
+    const realTarget = path.join(dir, "real.md");
+    fs.writeFileSync(realTarget, "REAL\n");
+    const link = path.join(dir, "journal.md");
+    fs.symlinkSync(realTarget, link);
+    assert.throws(
+      () => appendFileSyncDurable(link, "appended\n", { createIfMissing: false }),
+      (err) => err.code === "ELOOP",
+      "O_NOFOLLOW raises ELOOP on a symlink final component (no-create arm)"
+    );
+    assert.equal(fs.readFileSync(realTarget, "utf-8"), "REAL\n", "symlink target not written through");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendFileSyncDurable: create arm (default) ALSO refuses a symlink final component with ELOOP, target untouched", { skip: NOFOLLOW_SKIP }, () => {
+  const dir = mkTmpDir();
+  try {
+    const realTarget = path.join(dir, "real.md");
+    fs.writeFileSync(realTarget, "REAL\n");
+    const link = path.join(dir, "journal.md");
+    fs.symlinkSync(realTarget, link);
+    // Default createIfMissing:true is the manual /snap + /end path; it must refuse
+    // a symlink final component too; this case justifies BOTH-arms O_NOFOLLOW.
+    assert.throws(
+      () => appendFileSyncDurable(link, "appended\n"),
+      (err) => err.code === "ELOOP",
+      "O_NOFOLLOW|O_CREAT raises ELOOP rather than creating/clobbering through the symlink"
+    );
+    assert.equal(fs.readFileSync(realTarget, "utf-8"), "REAL\n", "symlink target not written through");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendFileSyncDurable: create arm makes a brand-new file with the umask-default 0o666 mode", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "fresh-journal.md");
+    appendFileSyncDurable(target, "first line\n");
+    assert.equal(fs.readFileSync(target, "utf-8"), "first line\n");
+    // 0o666 is exactly what the "a" flag passed; umask still applies. The append
+    // create path had no existing perms test (do not cite the atomicWriteFileSync
+    // perms lines, which cover a different open).
+    assert.equal(
+      fs.statSync(target).mode & 0o777,
+      0o666 & ~process.umask(),
+      "new append file carries 0o666 & ~umask (a wrong mode literal would fail here)"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("appendFileSyncDurable: no-create arm on a missing path still throws ENOENT (never resurrects)", () => {
+  const dir = mkTmpDir();
+  try {
+    const missing = path.join(dir, "does-not-exist.md");
+    assert.throws(
+      () => appendFileSyncDurable(missing, "x\n", { createIfMissing: false }),
+      (err) => err.code === "ENOENT",
+      "no-create arm without O_CREAT throws ENOENT on a missing path"
+    );
+    assert.equal(fs.existsSync(missing), false, "no file created on the no-create arm");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

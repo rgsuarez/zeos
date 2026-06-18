@@ -258,3 +258,61 @@ test("CLI `index.js snap`: no pointer -> no-op, exits 0 (never blocks compaction
     assert.ok(!/running on stdio/.test(r.stderr));
   });
 });
+
+// ---- O_NOFOLLOW swap-during-open TOCTOU: ELOOP + ENOTDIR -> distinct no-ops ----
+// These skip where O_NOFOLLOW is unavailable (the open degrades to following the
+// symlink by design there, so the refusal cannot be exercised).
+
+const NOFOLLOW_SKIP = (fs.constants.O_NOFOLLOW ?? 0) === 0 && "O_NOFOLLOW unsupported on this platform";
+
+test("runHeadlessSnap: a journal swapped to an IN-ROOT symlink is refused (ELOOP) -> noop journal-symlink-refused, target untouched", { skip: NOFOLLOW_SKIP }, () => {
+  withTempState((root) => {
+    const realJournal = seedJournal(root);
+    const before = fs.readFileSync(realJournal, "utf-8");
+    // Replace the resolved path with an IN-ROOT symlink to the real journal so
+    // containedRealJournalPath (which realpath-follows) PASSES containment and the
+    // O_NOFOLLOW open is the thing that refuses. The injected pointer aims at the
+    // symlink path, mimicking a post-validation swap.
+    const link = path.join(path.dirname(realJournal), "linked-journal.md");
+    fs.symlinkSync(realJournal, link);
+    const res = runHeadlessSnap(["--session", SID, "--handoff", "x"], {
+      resolvePointer: () => ({
+        schema: 1,
+        session_id: SID,
+        app_id: "demo-app",
+        agent: "claude",
+        journal_path: link,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    assert.equal(res.status, "noop", "a symlink final component is refused, not followed");
+    assert.equal(res.reason, "journal-symlink-refused");
+    assert.equal(fs.readFileSync(realJournal, "utf-8"), before, "symlink target was NOT written through");
+  });
+});
+
+test("runHeadlessSnap: a non-directory intermediate component (ENOTDIR) -> noop journal-not-a-directory", { skip: NOFOLLOW_SKIP }, () => {
+  withTempState((root) => {
+    seedJournal(root); // materialize the journals root so containment can resolve
+    // Make an intermediate component a regular FILE: <root>/journals/demo-app/seg
+    // is a file, so opening <root>/journals/demo-app/seg/journal.md yields ENOTDIR.
+    // dirname-realpath of `.../seg` (a real file) is in-root, so containment passes
+    // and the open is what fails with a DISTINCT reason from the symlink case.
+    const seg = path.join(root, "journals", "demo-app", "seg");
+    fs.writeFileSync(seg, "i am a file, not a directory\n");
+    const journalPath = path.join(seg, "journal.md");
+    const res = runHeadlessSnap(["--session", SID, "--handoff", "x"], {
+      resolvePointer: () => ({
+        schema: 1,
+        session_id: SID,
+        app_id: "demo-app",
+        agent: "claude",
+        journal_path: journalPath,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    assert.equal(res.status, "noop", "a non-directory intermediate component no-ops");
+    assert.equal(res.reason, "journal-not-a-directory", "distinct from the symlink reason");
+    assert.equal(fs.readFileSync(seg, "utf-8"), "i am a file, not a directory\n", "the intermediate file is untouched");
+  });
+});

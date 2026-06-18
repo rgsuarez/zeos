@@ -230,13 +230,29 @@ export function appendFileSyncDurable(
   // the redaction-before-append guarantee holds for the no-create path too.
   if (assertRedaction) assertNoSecrets(chunk, "pre-append", targetPath);
 
+  // O_NOFOLLOW on BOTH open arms refuses a final journal component that is a
+  // symlink (raising ELOOP) instead of following it, closing the swap-during-open
+  // TOCTOU where the resolved, realpath-validated path is replaced by a symlink
+  // after validation but before the open. fs.constants.O_NOFOLLOW is undefined on
+  // Windows; `?? 0` degrades to the prior follow-the-symlink behavior there (zeos
+  // targets darwin/Linux, where O_NOFOLLOW on a symlink final component yields
+  // ELOOP).
+  const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
   let fd: number | null = null;
   try {
     // "a" => O_WRONLY|O_APPEND|O_CREAT (creates if missing). The no-create mode
-    // drops O_CREAT, so opening a missing path throws ENOENT.
+    // drops O_CREAT, so opening a missing path throws ENOENT. The 0o666 create
+    // mode is exactly what the "a" flag passes (umask still applies); it matches
+    // the journal stub's {flag:"wx"} creation in journal.ts, so do NOT "tidy" it
+    // to 0o644. O_NOFOLLOW + O_CREAT (no O_EXCL) refuses a symlink final component
+    // with ELOOP rather than creating or clobbering through it.
     fd = createIfMissing
-      ? fs.openSync(targetPath, "a")
-      : fs.openSync(targetPath, fs.constants.O_WRONLY | fs.constants.O_APPEND);
+      ? fs.openSync(
+          targetPath,
+          fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | NOFOLLOW,
+          0o666,
+        )
+      : fs.openSync(targetPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | NOFOLLOW);
     fs.writeFileSync(fd, chunk);
     fs.fsyncSync(fd); // force the appended tail to stable storage
   } finally {
