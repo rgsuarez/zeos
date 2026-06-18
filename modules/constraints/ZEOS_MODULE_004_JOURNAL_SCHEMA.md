@@ -1,9 +1,9 @@
 ---
 module_id: "ZEOS_MODULE_004"
 module_type: "constraint"
-version: "1.0.0"
+version: "2.0.0"
 created: "2026-01-05"
-updated: "2026-01-05"
+updated: "2026-06-18"
 author: "Claude (system)"
 status: "active"
 classification: "CONSTRAINT"
@@ -25,6 +25,17 @@ This module defines the canonical file structure and formatting standards for se
 3. Chronological checkpoint trail for audit compliance
 4. Backward-compatible with graceful legacy handling
 
+> **Runtime-reconciled (v2.0.0, 2026-06-18).** This module is the binding,
+> kernel-referenced source of truth for journal structure. As of v2.0.0 it is
+> aligned to the actual Inject MCP runtime in
+> `infrastructure/inject/src/lib/journal.ts` and the snap/end handlers in
+> `infrastructure/inject/src/index.ts`. The pre-2.0.0 schema described a
+> `topic`-slug filename, a `type`/`started`/`ended` frontmatter, and an
+> `/end`-flips-`status` completion model that the runtime never implemented.
+> Those are corrected below. Fields that are genuinely wanted but not yet built
+> (`type`, `ended`, `topic`, `paused` resume) are marked **Intentional-future**
+> and are NOT current law. See the Version History note at the end.
+
 ---
 
 ## 1. File Naming Convention
@@ -32,45 +43,51 @@ This module defines the canonical file structure and formatting standards for se
 ### 1.1 Canonical Format
 
 ```
-YYYY-MM-DD-NNN-topic.md
+YYYY-MM-DD-NNN-<agent>.md
 ```
+
+The agent name is the trailing component so parallel instances writing on the
+same day do not collide. There is **no topic slug**; the session topic lives in
+the journal body and frontmatter, not the filename.
 
 ### 1.2 Component Specification
 
 | Component | Format | Description | Example |
 |-----------|--------|-------------|---------|
 | `YYYY` | 4-digit year | ISO 8601 year | `2026` |
-| `MM` | 2-digit month | Zero-padded (01-12) | `01` |
-| `DD` | 2-digit day | Zero-padded (01-31) | `05` |
+| `MM` | 2-digit month | Zero-padded (01-12) | `06` |
+| `DD` | 2-digit day | Zero-padded (01-31) | `18` |
 | `NNN` | 3-digit sequence | Daily session counter (001-999) | `001` |
-| `topic` | kebab-case string | Brief session topic descriptor | `api-refactor` |
+| `<agent>` | agent identifier | Writing agent name | `claude` |
 
 ### 1.3 Naming Rules
 
-1. **Date Component**: MUST use UTC date at session start
-2. **Sequence Number**: MUST increment per day, starting at `001`
-3. **Topic String**:
-   - MUST use lowercase kebab-case
-   - SHOULD be 2-5 words maximum
-   - MUST NOT contain special characters except hyphens
-   - SHOULD reflect primary session objective
+1. **Date Component**: MUST use UTC date at session start (`new Date().toISOString().split("T")[0]`)
+2. **Sequence Number**: MUST increment per day, zero-padded, starting at `001`; the runtime probes `001`-`999` and uses exclusive-create (`flag: "wx"`) so a collision advances to the next free sequence
+3. **Agent Component**: the writing agent's name (e.g. `claude`, `gemini`, `codex`), used to keep concurrent instances in distinct files
 
 ### 1.4 Examples
 
 **Valid:**
 ```
-2026-01-05-001-scaffold-initialization.md
-2026-01-05-002-bug-fix-auth-flow.md
-2026-01-06-001-feature-user-dashboard.md
+2026-06-18-001-claude.md
+2026-06-18-002-gemini.md
+2026-06-19-001-codex.md
 ```
 
 **Invalid:**
 ```
-2026-01-05-scaffold-init.md       # Missing sequence number
-2026-01-05-001-API_Refactor.md    # Underscore, uppercase
-2026-01-05-001.md                  # Missing topic
-2026-1-5-001-init.md              # Single-digit month/day
+2026-06-18-claude.md          # Missing sequence number
+2026-06-18-001-API_Refactor.md # Topic slug is not part of the schema
+2026-06-18-001.md              # Missing agent component
+2026-6-8-001-claude.md         # Single-digit month/day
 ```
+
+> **Intentional-future:** a kebab-case `topic` slug after the sequence (the
+> pre-2.0.0 design) is a wanted enhancement for at-a-glance scanning but is NOT
+> implemented and MUST NOT be treated as required. Tooling parses the
+> `YYYY-MM-DD-NNN-<agent>.md` shape; a topic slug would require a runtime change
+> to `createJournalStub` plus every consumer regex first.
 
 ---
 
@@ -78,15 +95,21 @@ YYYY-MM-DD-NNN-topic.md
 
 ### 2.1 Required Fields
 
-Every session journal MUST begin with YAML frontmatter:
+Every session journal MUST begin with the YAML frontmatter the runtime emits
+when it creates the stub (`createJournalStub`). The fields, in emitted order:
 
 ```yaml
 ---
-type: session-journal
-project: <project-identifier>
-status: <status-enum>
-started: <ISO-8601-datetime>
-ended: <ISO-8601-datetime | null>
+schema_version: "2.0.0"
+session_id: "YYYY-MM-DD-NNN"
+project: "<app_id>"
+date: "YYYY-MM-DD"
+sequence: N
+agent: "<agent>"
+instance: "<agent>"
+status: active
+created: "<ISO-8601-datetime>"
+previous_session: "YYYY-MM-DD-NNN" | null
 ---
 ```
 
@@ -94,46 +117,70 @@ ended: <ISO-8601-datetime | null>
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `type` | String (constant) | Yes | Always `session-journal` |
-| `project` | String (kebab-case) | Yes | Project identifier |
-| `status` | Enum | Yes | `active`, `completed`, `abandoned`, `paused` |
-| `started` | ISO 8601 datetime | Yes | Session start timestamp with `Z` suffix |
-| `ended` | ISO 8601 datetime or `null` | Yes | Session end timestamp or `null` if active |
+| `schema_version` | String (quoted) | Yes | Journal schema version; runtime constant `JOURNAL_SCHEMA_VERSION` (currently `"2.0.0"`) |
+| `session_id` | String (quoted) | Yes | `YYYY-MM-DD-NNN`, equals the filename's date+sequence |
+| `project` | String (quoted) | Yes | The project `app_id` (empty string if unknown) |
+| `date` | String (quoted) | Yes | UTC date at session start, `YYYY-MM-DD` |
+| `sequence` | Integer (bare) | Yes | Daily session counter as a bare integer (not zero-padded, not quoted) |
+| `agent` | String (quoted) | Yes | Writing agent name |
+| `instance` | String (quoted) | Yes | Instance identifier (currently mirrors `agent`) |
+| `status` | Literal `active` | Yes | Always written as `active`; never mutated (see 2.3) |
+| `created` | String (quoted) | Yes | Full ISO-8601 stub-creation timestamp with `Z` suffix |
+| `previous_session` | String (quoted) or bare `null` | Yes | `session_id` of the prior substantive session, or bare `null` if first |
 
-### 2.3 Status Definitions
+### 2.3 Status and Completion Model (append-only)
 
-| Status | Description |
-|--------|-------------|
-| `active` | Session currently in progress |
-| `completed` | Session concluded successfully with objectives met |
-| `abandoned` | Session terminated without completing objectives |
-| `paused` | Session suspended with intent to resume |
+The runtime is **append-only**. The frontmatter `status` is written once as
+`active` and is **never flipped**. A session's completion is signaled by an
+appended `## Session End:` block in the body, not by a frontmatter change.
+
+| Mechanism | Meaning |
+|-----------|---------|
+| `status: active` (frontmatter) | The created state of every journal; stays `active` for the file's life |
+| `## Checkpoint: <ts>` (body) | A `/snap` checkpoint was appended |
+| `## Session End: <ts>` (body) | The session was finalized via `/end` (this IS the completion marker) |
+
+**Legacy back-compat:** tooling also treats frontmatter `status: complete`
+(short form) as complete, but ONLY for pre-2.0.0 journals; the live runtime
+never writes it.
 
 ### 2.4 Validation Rules
 
 1. Frontmatter MUST be the first content in the file
 2. Opening and closing `---` MUST be on their own lines
-3. All required fields MUST be present
-4. `ended` MUST be `null` for `active` or `paused` sessions
-5. `ended` MUST be a valid datetime for `completed` or `abandoned` sessions
+3. All required fields above MUST be present
+4. `status` MUST be `active`; completion is the appended `## Session End:` block, not a status value
+5. `previous_session` MUST be a quoted `session_id` or the bare token `null`
+6. `session_id` MUST match the filename's `YYYY-MM-DD-NNN` prefix
 
 ### 2.5 Complete Header Example
 
 ```yaml
 ---
-type: session-journal
-project: zeos-core
-status: completed
-started: 2026-01-05T10:30:00Z
-ended: 2026-01-05T14:45:00Z
+schema_version: "2.0.0"
+session_id: "2026-06-18-001"
+project: "zeos-dev"
+date: "2026-06-18"
+sequence: 1
+agent: "claude"
+instance: "claude"
+status: active
+created: "2026-06-18T10:30:00.000Z"
+previous_session: "2026-06-17-004"
 ---
 
-# Session: API Refactoring Sprint
+# Session Journal: 2026-06-18-001
 
-## Objectives
-- Refactor authentication middleware
-- Update rate limiting configuration
+*Session started via zeos Inject MCP*
 ```
+
+> **Intentional-future:** the pre-2.0.0 fields `type: session-journal`,
+> `started`, `ended`, and the broader status enum (`completed`, `abandoned`,
+> `paused`) are NOT current law. An explicit `ended` timestamp and a `paused`
+> resume state are reasonable future enhancements, but each would require a
+> runtime change (the append-only finalizer would have to also write
+> frontmatter) before it could be required here. Until then, do not emit or
+> require `type`, `started`, `ended`, or any non-`active` status.
 
 ---
 
@@ -206,27 +253,43 @@ Checkpoint entries follow the Shell Protocol Bridge Rule format: capture what a 
 ```yaml
 # WRONG
 ---
-type: session-journal
-project: zeos-core
+session_id: "2026-06-18-001"
+project: "zeos-dev"
 ---
 
-# CORRECT
+# CORRECT (see Section 2.1 for the full required set)
 ---
-type: session-journal
-project: zeos-core
+schema_version: "2.0.0"
+session_id: "2026-06-18-001"
+project: "zeos-dev"
+date: "2026-06-18"
+sequence: 1
+agent: "claude"
+instance: "claude"
 status: active
-started: 2026-01-05T10:30:00Z
-ended: null
+created: "2026-06-18T10:30:00.000Z"
+previous_session: null
 ---
 ```
 
 **Invalid Datetime Format:**
 ```yaml
 # WRONG
-started: January 5, 2026 10:30 AM
+created: June 18, 2026 10:30 AM
 
 # CORRECT
-started: 2026-01-05T10:30:00Z
+created: "2026-06-18T10:30:00.000Z"
+```
+
+**Flipping status on completion (WRONG):**
+```yaml
+# WRONG - the runtime never rewrites frontmatter; status stays active
+status: completed
+
+# CORRECT - completion is an appended body block, frontmatter is untouched
+status: active
+# ...and in the body:
+## Session End: 2026-06-18T14:45:00.000Z
 ```
 
 ### 4.3 Checkpoint Anti-Patterns
@@ -294,17 +357,18 @@ legacy_format_version: pre-2026-01-04
 ## 6. Validation Checklist
 
 ### File Naming
-- [ ] Filename matches pattern `YYYY-MM-DD-NNN-topic.md`
+- [ ] Filename matches pattern `YYYY-MM-DD-NNN-<agent>.md`
 - [ ] Date is valid and in UTC
 - [ ] Sequence number is 3 digits, zero-padded
-- [ ] Topic is kebab-case, 2-5 words
+- [ ] Trailing component is the writing agent name (no topic slug)
 
 ### Frontmatter
 - [ ] Frontmatter is first content in file
-- [ ] All five required fields present
-- [ ] `type` equals `session-journal`
-- [ ] `status` is valid enum value
-- [ ] Timestamps use ISO 8601 with `Z` suffix
+- [ ] All ten required fields present (Section 2.1)
+- [ ] `session_id` matches the filename's date+sequence
+- [ ] `status` is `active` (completion is the appended `## Session End:` block)
+- [ ] `created` uses ISO 8601 with `Z` suffix
+- [ ] `previous_session` is a quoted `session_id` or bare `null`
 
 ### Checkpoints
 - [ ] Checkpoints are in chronological order
@@ -324,9 +388,9 @@ Session journal initialization integrates with BOOT_PROTOCOL when `/project <id>
 
 | Command | Journal Interaction |
 |---------|---------------------|
-| `/snap` | Creates new checkpoint entry |
-| `/end` | Finalizes journal, sets status to `completed` |
-| `/project` | Initializes or resumes session journal |
+| `/snap` | Appends a `## Checkpoint:` block (append-only) |
+| `/end` | Appends a `## Session End:` block; this block IS the completion marker. Does NOT flip frontmatter `status` or rewrite the file |
+| `/project` | Creates (or reuses) the day's journal stub and seeds `previous_session` |
 
 ### 7.3 scaffold.py
 
@@ -348,8 +412,17 @@ The `generate_journal_readme()` function produces README.md files compliant with
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-01-05 | Initial release |
+| 2.0.0 | 2026-06-18 | Runtime reconciliation. Aligned the binding schema to the actual Inject MCP runtime (`infrastructure/inject/src/lib/journal.ts` + the snap/end handlers in `src/index.ts`). Corrected: filename is `YYYY-MM-DD-NNN-<agent>.md` (no topic slug); frontmatter is `schema_version, session_id, project, date, sequence, agent, instance, status, created, previous_session` (replacing `type`/`started`/`ended`); completion is the appended `## Session End:` block under an append-only model (the prior `/end`-flips-`status` description was never implemented). The withdrawn fields (`type`, `ended`, `topic` slug, `paused` resume) are reclassified as Intentional-future, not current law. |
+
+> **2.0.0 reconciliation note (2026-06-18).** This is a dated amendment to a
+> binding, kernel-referenced constraint. The kernel restatement in
+> `kernel/BOOT_PROTOCOL.md` (Step 4) was updated in lockstep in the same change
+> so the kernel does not cite a stale spec, and the older conflicting
+> `docs/SESSION_JOURNAL_FORMAT.md` was superseded by a pointer to this module.
+> The amendment reconciles documentation to existing runtime behavior; it does
+> not change any runtime code.
 
 ---
 
-*ZEOS_MODULE_004_JOURNAL_SCHEMA v1.0.0*
+*ZEOS_MODULE_004_JOURNAL_SCHEMA v2.0.0*
 *"Structured journals enable intelligence compounding"*

@@ -3,10 +3,10 @@ document: "BOOT_PROTOCOL"
 version: "5.6.0"
 classification: "KERNEL (IMMUTABLE)"
 created: "2024-12-14"
-updated: "2026-01-13"
+updated: "2026-06-18"
 status: "ACTIVE"
 maintained_by: "Claude (system)"
-update_reason: "Add ghost mode branch for read-only sessions ( flag)"
+update_reason: "Reconcile the embedded ZEOS_MODULE_004 restatement (Step 4 stub format, stub lifecycle, session-init frontmatter) with the append-only journal runtime, in lockstep with ZEOS_MODULE_004 v2.0.0"
 location: "kernel/BOOT_PROTOCOL.md"
 ---
 
@@ -217,8 +217,8 @@ Operators who want automatic profile loading configure this in their AI platform
 9. JOURNAL STUB CREATION (Immediate Visibility):
    - On `/project` load, IMMEDIATELY create journal stub file
    - Stub enables parallel instance detection BEFORE first checkpoint
-   - Stub file: `{date}-{sequence}-{agent-name}.md`
-   - Stub contains frontmatter with status: in_progress
+   - Stub file: `{date}-{sequence}-{agent}.md` (no topic slug)
+   - Stub contains frontmatter with status: active (see ZEOS_MODULE_004 Section 2)
    - Stub body: placeholder text until first checkpoint
    - COMMIT stub immediately (single-file commit)
 ```
@@ -227,23 +227,25 @@ Operators who want automatic profile loading configure this in their AI platform
 
 When `/project <id>` loads, agent MUST create a journal stub file **immediately**, before any other work. This ensures parallel instance visibility from the moment of boot.
 
-**Stub File Format:**
+**Stub File Format (per ZEOS_MODULE_004 Section 2.1 - the runtime frontmatter):**
 
 ```yaml
 ---
-session: "{date}-{sequence}"
-instance: "{agent}-{hash4}"
-project: "{project-id}"
-agent: "{Agent Name}"
-started: "{ISO-8601-timestamp}"
-ended: null
-status: in_progress
-blueprint: "{active-blueprint-filename | null}"
+schema_version: "2.0.0"
+session_id: "{date}-{sequence}"
+project: "{app_id}"
+date: "{date}"
+sequence: {N}
+agent: "{agent}"
+instance: "{agent}"
+status: active
+created: "{ISO-8601-timestamp}"
+previous_session: "{prior session_id}" | null
 ---
 
-# Session {sequence}: [Awaiting First Checkpoint]
+# Session Journal: {date}-{sequence}
 
-*Journal stub created at boot. Content populates on first `/snap`.*
+*Session started via zeos Inject MCP*
 
 ---
 ```
@@ -291,15 +293,15 @@ The stub must be committed (not just written locally) so that:
 - Parallel detection works across machines
 - Instance is visible even if session crashes before first checkpoint
 
-**Stub Lifecycle:**
+**Stub Lifecycle (append-only; frontmatter `status` stays `active` throughout):**
 
-| Event | Stub State |
+| Event | Journal State |
 |-------|------------|
-| `/project` load | Created with `status: in_progress` |
-| First `/snap` | Body replaced with actual content |
-| Subsequent checkpoints | Appended normally |
-| `/end` | Status changed to `complete` |
-| Crash (no /end) | Remains `in_progress` (stale detection) |
+| `/project` load | Created with `status: active` and `previous_session` seeded |
+| First `/snap` | A `## Checkpoint:` block is appended (body is never replaced) |
+| Subsequent checkpoints | Further `## Checkpoint:` blocks appended |
+| `/end` | A `## Session End:` block is appended; this block IS the completion marker. Frontmatter `status` is NOT flipped |
+| Crash (no /end) | No `## Session End:` block; the journal reads as interrupted (drives continuation load) |
 
 **Project mode Design:**
 
@@ -319,41 +321,48 @@ To begin work, operator runs `/project <id>` which:
 
 When `/project <id>` activates a project:
 
-1. **Check for Existing Active Session**
-   - Scan `~/.zeos/journals/<app_id>/` for files with `status: active` or `status: paused`
-   - If found: Present option to resume or start new session
-   - If none found: Proceed to new session creation
+1. **Determine the latest prior session**
+   - Scan `~/.zeos/journals/<app_id>/` for the newest SUBSTANTIVE journal (the runtime skips unworked stubs; an interrupted-but-substantive journal still counts as latest)
+   - Use it to seed the new stub's `previous_session` and to drive continuation loading
 
-2. **Resume Existing Session**
-   - Load selected journal file
-   - Update status to `active` if previously `paused`
-   - Add resumption checkpoint
+2. **Continuation load (not a status edit)**
+   - Load the latest journal verbatim
+   - ALSO load one budgeted prior journal when the latest was interrupted (no `## Session End:` block) OR ended cleanly with open `### Next Actions`
+   - Resuming does not mutate any prior journal; journals are append-only
 
-3. **Create New Session**
-   - Generate filename: `YYYY-MM-DD-NNN-topic.md`
-   - Add frontmatter: `type`, `project`, `status`, `started`, `ended`
+3. **Create the new session stub**
+   - Generate filename: `YYYY-MM-DD-NNN-<agent>.md`
+   - Add the runtime frontmatter (Section 2.1) with `status: active` and `previous_session` seeded
    - Display confirmation
 
-**Journal File Naming (ZEOS_MODULE_004 Section 2):**
+**Journal File Naming (ZEOS_MODULE_004 Section 1):**
 ```
-YYYY-MM-DD-NNN-topic.md
+YYYY-MM-DD-NNN-<agent>.md
 
 Components:
   YYYY-MM-DD  = UTC date at session start
-  NNN         = Daily sequence number (001-999)
-  topic       = Kebab-case session topic (2-5 words)
+  NNN         = Daily sequence number (001-999), zero-padded
+  <agent>     = Writing agent name (no topic slug)
 ```
 
-**Required Frontmatter (ZEOS_MODULE_004 Section 3):**
+**Required Frontmatter (ZEOS_MODULE_004 Section 2.1):**
 ```yaml
 ---
-type: session-journal
-project: <project-slug>
-status: active | completed | abandoned | paused
-started: <ISO-8601-datetime>
-ended: <ISO-8601-datetime | null>
+schema_version: "2.0.0"
+session_id: "YYYY-MM-DD-NNN"
+project: "<app_id>"
+date: "YYYY-MM-DD"
+sequence: N
+agent: "<agent>"
+instance: "<agent>"
+status: active
+created: "<ISO-8601-datetime>"
+previous_session: "YYYY-MM-DD-NNN" | null
 ---
 ```
+
+Completion is the appended `## Session End:` block, not a frontmatter `status`
+change (append-only model).
 
 **Full specification:** `modules/constraints/ZEOS_MODULE_004_JOURNAL_SCHEMA.md`
 
@@ -368,15 +377,14 @@ When `/project <id>` activates a project, detect other active instances:
     c. Compose: {agent}-{hash4} (e.g., "claude-opus-a3f2")
     d. Store in session context (memory only)
 
-13. PARALLEL INSTANCE DETECTION:
+13. PARALLEL INSTANCE DETECTION (per the runtime `checkParallelInstances`):
     a. GLOB ~/.zeos/journals/<app_id>/{today}-*.md
-    b. PARSE each journal frontmatter for:
-       - status: in_progress (indicates active session)
-       - agent: instance identifier
-       - started: timestamp
+    b. For each of today's journals:
+       - Treat it as active if it has NO `## Session End:` block (not complete)
+       - Derive the agent from the filename's trailing `-{agent}.md` component
     c. IDENTIFY parallel instances:
-       - Status = in_progress
-       - Started within last 2 hours (not stale)
+       - Active (no Session End block) today's journals
+       - The current agent's own unworked stubs are excluded (reusable self-state, not a conflict)
     d. IF parallel instances found:
        → Include in boot output (informational, non-blocking)
 ```
