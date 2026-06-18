@@ -257,8 +257,10 @@ previous_session: "{prior session_id}" | null
 ```
 ON /project <id>:
   1. DETERMINE the agent name (per Step 4.5; `instance` mirrors `agent`)
-  2. DETERMINE sequence number (glob existing journals; exclusive-create probes
-     001-999)
+  2. DETERMINE sequence number. The runtime probes `{date}-{NNN}-{agent}.md` for
+     NNN 001-999 and exclusive-creates the first free name, so the sequence is
+     scoped to date PLUS agent, not a single global per-day counter: each agent's
+     first session on a given date is 001
   3. CREATE stub file with frontmatter + placeholder body via writeFileSync
      (no git commit; written under ~/.zeos/journals/<app_id>/)
   4. PROCEED with rest of boot sequence
@@ -345,7 +347,8 @@ YYYY-MM-DD-NNN-<agent>.md
 
 Components:
   YYYY-MM-DD  = UTC date at session start
-  NNN         = Daily sequence number (001-999), zero-padded
+  NNN         = Sequence number (001-999), zero-padded, scoped per date PLUS
+                agent (each agent's first session on a date is 001)
   <agent>     = Writing agent name (no topic slug)
 ```
 
@@ -623,7 +626,7 @@ Before outputting boot confirmation, agent MUST verify ALL gates pass. This is n
 | G8 | If `/project`: Latest session journal loaded | Glob + read most recent |
 | G9 | If `/project` and `active_blueprint` set: Blueprint loaded | File read + parse confirmed |
 | G10 | If profile has `modules:` array: ALL listed modules loaded | Each file read confirmed |
-| G11 | If `/project`: Instance ID generated, parallel detection complete | Instance ID in context, scan complete |
+| G11 | If `/project`: agent name resolved (the bare `instance`), parallel detection complete | Agent name in context (no hash-suffixed ID is generated), scan complete |
 | G12 | If `/project`: Repo boundary detected and enforcement set | Git root resolved, enforcement level set |
 
 **Enforcement Rules with Retry Logic:**
@@ -676,7 +679,7 @@ IF profile has modules: array AND G10 fails:
     PROCEED — this is non-fatal (degraded mode)
 
 IF /project issued AND G11 fails:
-    WARN "Instance ID generation failed — parallel detection unavailable"
+    WARN "Agent name could not be resolved — parallel detection unavailable"
     PROCEED — this is non-fatal (degraded mode)
 
 IF /project issued AND G12 fails:
@@ -703,7 +706,7 @@ IF you cannot answer these questions:
 
 CORRECT ANSWERS:
 1. "One operator. Infinite leverage."
-2. "5.0.0"
+2. "5.6.0"
 3. /snap, /end, /status, /project, /zeos (any 3)
 4. [operator name from profile]
 ```
@@ -713,7 +716,7 @@ CORRECT ANSWERS:
 ```
 ✅ BOOT VALIDATION PASSED
    G1: ✅ kernel/SOUL.md loaded (North Star: "One operator. Infinite leverage.")
-   G2: ✅ kernel/BOOT_PROTOCOL.md loaded (v5.0.0)
+   G2: ✅ kernel/BOOT_PROTOCOL.md loaded (v5.6.0)
    G3: ✅ profiles/{profile}/PROFILE.md loaded (Operator: {name})
    G4: ✅ SHELL_PROTOCOL.md loaded (Commands: /snap, /end, /status)
    G5: ✅ CONTINUITY_PROTOCOL.md loaded
@@ -752,7 +755,8 @@ After validation, zeos determines which output flow to use based on context stat
 ```
 13. EVALUATE session context:
 
-    IF no prior sessions in profile journal:
+    IF no prior sessions in the project's state-root journal directory
+       (`~/.zeos/journals/<app_id>/`):
         → initial-boot flow (new user onboarding)
         
     ELSE IF boot triggered by app-specific command:
@@ -987,7 +991,7 @@ Blind Agents issue `REQUEST_CAPABILITY` for persistence actions. The runtime age
 
 **Security Constraint:** Credentials never leave infrastructure. Blind Agents request actions; Executors perform them. See `kernel/SECRETS_MODEL.md`.
 
-**Profile Isolation:** Agents write only to their active profile's journals unless performing cross-profile tasks approved by the Operator.
+**Journal Scoping:** Session journals are scoped per project under the state root (`~/.zeos/journals/<app_id>/`), not per profile and never inside the project repo. An agent writes to the active project's journal directory, keyed by its own agent name so concurrent agents never collide. See `infrastructure/inject/src/path-resolver.ts` (`resolveJournalPath`).
 
 **Note:** Current zeos deployments use Claude as runtime agent. This is a deployment choice, not a Kernel requirement.
 
@@ -1083,7 +1087,7 @@ When loading Profile and Modules, the boot sequence MUST validate:
 
 ---
 
-*Boot Protocol v5.5.0 — Lean boot mode*
+*Boot Protocol v5.6.0 — runtime-reconciled journal model*
 *"Kernel is law. Modules constrain. Profiles customize."*
 
 

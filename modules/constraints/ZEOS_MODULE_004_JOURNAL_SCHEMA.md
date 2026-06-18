@@ -35,8 +35,9 @@ This module defines the canonical file structure and formatting standards for se
 > State-of-the-World / Open-Threads / Context sections, and a
 > Time/Delta/State-Before/State-After checkpoint body, none of which the runtime
 > ever implemented. All of those are corrected throughout (the file naming and
-> frontmatter in Sections 1-2, and the checkpoint shape, anti-patterns,
-> validation checklist, and integration references in Sections 3, 4, 6, and 7).
+> frontmatter in Sections 1-2, the checkpoint shape and the `## Session End:`
+> body in Section 3, and the anti-patterns, validation checklist, and integration
+> references in Sections 4, 6, and 7).
 > Fields that are genuinely wanted but not yet built (`type`, `ended`, `topic`,
 > `paused` resume) are marked **Intentional-future** and are NOT current law.
 > See the Version History note at the end.
@@ -144,8 +145,8 @@ appended `## Session End:` block in the body, not by a frontmatter change.
 | Mechanism | Meaning |
 |-----------|---------|
 | `status: active` (frontmatter) | The created state of every journal; stays `active` for the file's life |
-| `## Checkpoint: <ts>` (body) | A `/snap` checkpoint was appended |
-| `## Session End: <ts>` (body) | The session was finalized via `/end` (this IS the completion marker) |
+| `## Checkpoint: <ts>` (body) | A `/snap` checkpoint was appended (body spec: Section 3.2) |
+| `## Session End: <ts>` (body) | The session was finalized via `/end` (this IS the completion marker; body spec: Section 3.5) |
 
 **Legacy back-compat:** tooling also treats frontmatter `status: complete`
 (short form) as complete, but ONLY for pre-2.0.0 journals; the live runtime
@@ -237,6 +238,56 @@ operator-authored fields.
 | 1-2 hours | 2-4 checkpoints |
 | 2-4 hours | 4-6 checkpoints |
 | > 4 hours | Every 30-45 minutes |
+
+### 3.5 Session End Entry Format
+
+`/end` finalizes a journal by appending exactly one `## Session End:` block. This
+block IS the completion marker; the runtime never flips frontmatter `status` or
+rewrites the file (Section 2.3). This is the exact block the runtime appends (the
+`zeos_end_session` handler in `infrastructure/inject/src/index.ts`). The heading
+is `## Session End:` with an ISO timestamp, and the required body sections are
+`### Summary`, `### Final Bridge`, and `### Next Actions`, in that order; `### Tags`
+is optional and emitted only when supplied:
+
+```markdown
+## Session End: {ISO-8601-timestamp}
+
+### Summary
+{What this session accomplished and decided. The boot assembler extracts this
+section as the session's summary for the Recent Sessions block.}
+
+### Final Bridge
+{Bridge Rule content (Section 3.1) for the whole session: what the next session
+needs to know that it cannot derive from code, git, CLAUDE.md, or MEMORY.md.}
+
+### Next Actions
+{The concrete next steps. Non-empty Next Actions drive continuation loading: on
+the next `/project`, a non-empty `### Next Actions` here marks this completed
+session as still open, so boot also loads it as the budgeted prior journal.}
+
+### Tags
+{optional tags rendered as a list; omitted when not supplied}
+```
+
+After the body sections, the runtime appends an optional git snapshot, an
+optional redaction notice when sensitive values were stripped, and a closing
+`---` followed by `*Session complete*`; those are tool-generated, not
+operator-authored, fields.
+
+#### 3.5.1 Session End Field Requirements
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `timestamp` | Yes | ISO-8601 timestamp in the `## Session End:` heading (runtime always emits ISO) |
+| `Summary` | Yes | What the session accomplished and decided; consumed as the journal's summary by the boot assembler and MEMORY.md curation |
+| `Final Bridge` | Yes | Whole-session Bridge Rule content (Section 3.1) |
+| `Next Actions` | Yes | Concrete next steps; a non-empty value marks the completed session as continuation-relevant (`hasOpenNextActions` / `shouldLoadPrior`) |
+| `Tags` | No | Optional tags; emitted only when supplied |
+
+#### 3.5.2 Completion and Continuation Semantics
+
+- **Completion** is the presence of the `## Session End:` block (`hasSessionEndBlock`), not a frontmatter value. A journal with no `## Session End:` block reads as interrupted.
+- **Continuation** loading (`shouldLoadPrior`) triggers when the latest substantive journal was interrupted (no `## Session End:` block) OR ended cleanly but with a non-empty `### Next Actions` inside its Session End region. Empty or placeholder Next Actions do not trigger continuation.
 
 ---
 
@@ -399,6 +450,12 @@ legacy_format_version: pre-2026-01-04
 - [ ] Each checkpoint has a `### Bridge` section with Bridge Rule content (Section 3.2)
 - [ ] `Note` and `Tags`, when present, sit above the Bridge
 
+### Session End
+- [ ] At most one `## Session End:` block, appended (never a frontmatter `status` flip)
+- [ ] `## Session End:` heading carries an ISO-8601 timestamp
+- [ ] `### Summary`, `### Final Bridge`, and `### Next Actions` are all present, in that order (Section 3.5)
+- [ ] `### Tags`, when present, follows `### Next Actions`
+
 ---
 
 ## 7. Integration Points
@@ -411,8 +468,8 @@ Session journal initialization integrates with BOOT_PROTOCOL when `/project <id>
 
 | Command | Journal Interaction |
 |---------|---------------------|
-| `/snap` | Appends a `## Checkpoint:` block (append-only) |
-| `/end` | Appends a `## Session End:` block; this block IS the completion marker. Does NOT flip frontmatter `status` or rewrite the file |
+| `/snap` | Appends a `## Checkpoint:` block (Section 3.2, append-only) |
+| `/end` | Appends a `## Session End:` block (Section 3.5); this block IS the completion marker. Does NOT flip frontmatter `status` or rewrite the file |
 | `/project` | Creates (or reuses) the day's journal stub and seeds `previous_session` |
 
 ### 7.3 Inject MCP Runtime
@@ -421,9 +478,9 @@ Journal stubs that comply with this schema are produced by the Inject MCP
 runtime, not by a scaffolding script. `createJournalStub` in
 `infrastructure/inject/src/lib/journal.ts` emits the Section 2.1 frontmatter and
 the opening body; the `zeos_snap` and `zeos_end_session` handlers in
-`infrastructure/inject/src/index.ts` append the Section 3 checkpoint and the
-`## Session End:` completion block. There is no separate journal-README
-generator in `tools/`.
+`infrastructure/inject/src/index.ts` append the Section 3.2 checkpoint and the
+Section 3.5 `## Session End:` completion block. There is no separate
+journal-README generator in `tools/`.
 
 ---
 
@@ -441,7 +498,7 @@ generator in `tools/`.
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0.0 | 2026-01-05 | Initial release |
-| 2.0.0 | 2026-06-18 | Runtime reconciliation. Aligned the binding schema end-to-end to the actual Inject MCP runtime (`infrastructure/inject/src/lib/journal.ts` + the snap/end handlers in `src/index.ts`). Corrected: filename is `YYYY-MM-DD-NNN-<agent>.md` (no topic slug, Sections 1 and 4.1); frontmatter is `schema_version, session_id, project, date, sequence, agent, instance, status, created, previous_session` (replacing `type`/`started`/`ended`, Section 2); the checkpoint block is `## Checkpoint: <ISO-ts>` with a required `### Bridge` section plus optional `Note`/`Tags` (Sections 3.2-3.3), replacing the prior `## Snap` State-of-the-World/Open-Threads body; the checkpoint anti-patterns and the Section 6 validation checklist were re-expressed around the Bridge body (dropping the never-emitted Time/Delta/State-Before/State-After fields); the Section 7.3 integration reference now points at the Inject MCP runtime instead of a non-existent `tools/scaffold.py` README generator; and completion is the appended `## Session End:` block under an append-only model (the prior `/end`-flips-`status` description was never implemented). The withdrawn fields (`type`, `ended`, `topic` slug, `paused` resume) are reclassified as Intentional-future, not current law. |
+| 2.0.0 | 2026-06-18 | Runtime reconciliation. Aligned the binding schema end-to-end to the actual Inject MCP runtime (`infrastructure/inject/src/lib/journal.ts` + the snap/end handlers in `src/index.ts`). Corrected: filename is `YYYY-MM-DD-NNN-<agent>.md` (no topic slug, Sections 1 and 4.1); frontmatter is `schema_version, session_id, project, date, sequence, agent, instance, status, created, previous_session` (replacing `type`/`started`/`ended`, Section 2); the checkpoint block is `## Checkpoint: <ISO-ts>` with a required `### Bridge` section plus optional `Note`/`Tags` (Sections 3.2-3.3), replacing the prior `## Snap` State-of-the-World/Open-Threads body; the `## Session End:` block body is specified for the first time (Section 3.5: required `### Summary`, `### Final Bridge`, `### Next Actions`, optional `### Tags`, with a non-empty `### Next Actions` driving continuation loading via `hasOpenNextActions`/`shouldLoadPrior`), where the prior schema only named the heading; the checkpoint and session-end anti-patterns and the Section 6 validation checklist were re-expressed around those bodies (dropping the never-emitted Time/Delta/State-Before/State-After fields); the Section 7.3 integration reference now points at the Inject MCP runtime instead of a non-existent `tools/scaffold.py` README generator; and completion is the appended `## Session End:` block under an append-only model (the prior `/end`-flips-`status` description was never implemented). The withdrawn fields (`type`, `ended`, `topic` slug, `paused` resume) are reclassified as Intentional-future, not current law. |
 
 > **2.0.0 reconciliation note (2026-06-18).** This is a dated amendment to a
 > binding, kernel-referenced constraint. The kernel restatement in

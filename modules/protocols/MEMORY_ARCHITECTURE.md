@@ -106,7 +106,7 @@ The Memory Architecture defines:
 | **Token Budget** | 800-2,000 tokens per file |
 | **Change Frequency** | Rarely (major milestones, identity shifts) |
 | **Load Trigger** | Every boot, no exceptions |
-| **Persistence** | Git repository (version controlled) |
+| **Persistence** | State root, outside any repo: project SOUL at `~/.zeos/souls/<app_id>/SOUL.md`, MASTER_ROADMAP at `~/.zeos/roadmaps/<app_id>/MASTER_ROADMAP.md`, PROFILE at `~/.zeos/profiles/<operator>/PROFILE.md` (per `infrastructure/inject/src/path-resolver.ts`). The project's own `CLAUDE.md` is the only T1-adjacent file that lives in the project repo. |
 | **Owner** | Operator (requires explicit approval to modify) |
 
 **Questions Answered:**
@@ -126,7 +126,7 @@ The Memory Architecture defines:
 | Attribute | Specification |
 |-----------|---------------|
 | **Contents** | Session journals, Active blueprint, Decision logs |
-| **Token Budget** | 500-1,500 tokens (latest journal), 300-800 tokens (blueprint summary) |
+| **Token Budget** | Latest journal: verbatim, unbounded (never summarized, per `budgetPriorJournal` applying only to the prior). Prior journal (continuation): budgeted to ~800 tokens. Blueprint summary: 300-800 tokens. |
 | **Change Frequency** | Every session |
 | **Load Trigger** | Boot (latest + prior if continuation) |
 | **Persistence** | State root (`~/.zeos/journals/<app_id>/`) |
@@ -182,7 +182,7 @@ The Recent Sessions block (summaries of the last 3) and the verbatim latest-plus
 | **T1** | Project SOUL | 400-800 | 1,500 |
 | **T1** | MASTER_ROADMAP | 500-1,000 | 2,000 |
 | **T1** | PROFILE | 800-1,200 | 2,000 |
-| **T2** | Latest Journal | 500-1,000 | 1,500 |
+| **T2** | Latest Journal | verbatim (varies) | unbounded (never summarized) |
 | **T2** | Prior Journal (if continuation) | 300-500 | 800 |
 | **T2** | Active Blueprint (summary) | 300-600 | 1,000 |
 | **T3** | Working Context | Variable | Context limit |
@@ -214,7 +214,7 @@ USER OPENS CHANNEL / RUNS /project
 │  G2: Load kernel/BOOT_PROTOCOL.md                              │
 │      → Agent knows HOW TO BEHAVE (procedures)                  │
 │                                                                │
-│  G3: Load profiles/{id}/PROFILE.md                             │
+│  G3: Load ~/.zeos/profiles/{id}/PROFILE.md                     │
 │      → Agent knows WHO THE OPERATOR IS                         │
 │                                                                │
 │  G6: Load ~/.zeos/souls/{id}/SOUL.md                           │
@@ -233,8 +233,9 @@ USER OPENS CHANNEL / RUNS /project
 │                                                                │
 │  ═══ TIER 3 INITIALIZATION (Short-Term) ═══                   │
 │                                                                │
-│  G11: Generate instance ID                                     │
-│      → Agent has UNIQUE IDENTITY for this session              │
+│  G11: Resolve agent name (the bare `instance`)                 │
+│      → Identity is the agent name (e.g. claude), not a         │
+│        session-unique hash; `instance` mirrors `agent`         │
 │                                                                │
 │  Create journal stub                                           │
 │      → Session is VISIBLE to parallel instances                │
@@ -301,11 +302,11 @@ When multiple agents work on the same project:
 
 ### Isolated Memory
 - T3: Each agent's working context is isolated
-- Instance ID ensures journal attribution
+- The agent name (the trailing filename component and the `instance` field) attributes each journal
 
 ### Conflict Prevention
 - Protected files (ROADMAP, blueprints) use timestamp checks
-- Journal files are instance-scoped (no collision)
+- Journal files are agent-scoped via the `-<agent>.md` filename component, so concurrent agents write distinct files (no collision)
 - Git coordinates final state
 
 **Reference:** the parallel-instance protocol documentation
@@ -540,7 +541,7 @@ paths:
 |---------|------|---------|
 | 1.0.0 | 2026-01-13 | Initial protocol — three-tier model formalized |
 | 2.0.0 | 2026-02-02 | Added MEMORY.md file format, decay scores, auto-curation |
-| 2.1.0 | 2026-06-18 | Reconciled Tier 2 journal loading rules to the runtime: latest = newest substantive journal (stub-skipping); continuation = interrupted OR open Next Actions, via `previous_session` link, capped at two journals. |
+| 2.1.0 | 2026-06-18 | Reconciled to the Inject MCP runtime: (1) Tier 2 journal loading rules - latest = newest substantive journal (stub-skipping), continuation = interrupted OR open Next Actions, via `previous_session` link, capped at two journals; (2) Tier 1 persistence location - SOUL/MASTER_ROADMAP/PROFILE live in the state root (`~/.zeos/...`, per `path-resolver.ts`), not the project repo (only the project's `CLAUDE.md` is repo-side); (3) Tier 2 token budgets - the latest journal renders verbatim and unbounded (never summarized), only the prior journal is budgeted (~800 tokens); (4) instance identity - `instance` mirrors the bare agent name and journals are agent-scoped via the `-<agent>.md` filename, not a session-unique generated ID. |
 
 ---
 

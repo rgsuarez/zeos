@@ -5,8 +5,8 @@ classification: "KERNEL (IMMUTABLE)"
 lean_version_of: "kernel/BOOT_PROTOCOL.md"
 full_protocol_uri: "zeos://protocols/boot"
 token_limit: "≤1,500 tokens"
-updated: "2026-01-20"
-update_reason: "Claude native integration - command prefix migration from ! to /"
+updated: "2026-06-18"
+update_reason: "Reconcile the lean Step 4.5 instance-ID line to the runtime bare-agent model (instance mirrors agent; no {agent}-{hash4} suffix), matching the full BOOT_PROTOCOL"
 ---
 
 # zeos Boot Protocol — Skeleton v5.7.0

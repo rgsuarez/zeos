@@ -201,8 +201,9 @@ If multiple MEMORY entries share the target date and `entry_title` is not suppli
 ## Dependencies
 
 - Node.js 18+
-- zeos repository at `~/projects/zeos/`
-- Project contexts at `~/clawd/projects/`
+- zeos repository at `~/projects/zeos/` (the product: kernel, modules, infrastructure)
+- Operator state under the state root `~/.zeos/` (souls, journals, memory, roadmaps, registry, profiles), outside any repo
+- Project working trees under `~/projects/<app_id>/` (or each registry entry's `repo.clone_path`)
 
 ## License
 
