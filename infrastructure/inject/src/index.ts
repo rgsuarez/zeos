@@ -53,6 +53,8 @@ import {
 import {
   decideSnap,
   decideEndSession,
+  endSessionHeadline,
+  endSessionMemorySkippedWarning,
 } from "./lib/handoff.js";
 import {
   MEMORY_ENTRY_DECAY_DEFAULT,
@@ -1344,6 +1346,12 @@ ${formatRedactionNotice(redactions)}
         fs.mkdirSync(path.dirname(memoryPath), { recursive: true });
         const tokenLimit = getMemoryTokenLimit();
         let curationMessage = "";
+        // Tracks whether the MEMORY.md write actually completed. The journal is
+        // already durably saved by this point; the MEMORY write is best-effort
+        // and is SKIPPED on lock contention or a redaction halt. The SESSION
+        // COMPLETE headline reads this so it never claims a save that did not
+        // happen. Set true only after a successful write below.
+        let memorySaved = false;
 
         const lockAcquired = acquireMemoryLock(memoryPath);
         if (!lockAcquired) {
@@ -1457,6 +1465,9 @@ ${formatRedactionNotice(redactions)}
               };
               atomicWriteWithBackup(memoryPath, formatMemoryMd(newMemory));
             }
+            // Both write branches completed without throwing: the MEMORY.md
+            // write is durable, so the headline may honestly claim the save.
+            memorySaved = true;
           }
         } catch (e) {
           if (e instanceof RedactionAssertionError) {
@@ -1473,13 +1484,7 @@ ${formatRedactionNotice(redactions)}
             // DUPLICATE (the next clean /end or curate dedups it on load via the
             // durable Source Journal id), not data loss. Say so, so the operator
             // does not assume the archive is untouched.
-            curationMessage =
-              `\nWARNING: MEMORY.md update SKIPPED, redaction assertion failed ` +
-              `(${e.count} secret-shaped value(s)). The session journal was saved. ` +
-              `MEMORY.md was not rewritten; if auto-curation had begun, ` +
-              `MEMORY_ARCHIVE.md may hold a recoverable DUPLICATE of moved ` +
-              `entries (state is recoverable, not lost; the next clean /end ` +
-              `dedups it). Inspect and clean ${memoryPath} before the next /end.`;
+            curationMessage = endSessionMemorySkippedWarning(e.count, memoryPath, archivePath);
           } else {
             throw e;
           }
@@ -1511,7 +1516,7 @@ ${formatRedactionNotice(redactions)}
 SESSION COMPLETE
 ═══════════════════════════════════════════════════════════════
 
-${journalPath ? `Journal: ${journalPath}\n` : ''}Summary saved to MEMORY.md${curationMessage}${promotionHints}
+${journalPath ? `Journal: ${journalPath}\n` : ''}${endSessionHeadline(memorySaved ? "saved" : "skipped")}${curationMessage}${promotionHints}
 
 Next session:
   /zeos

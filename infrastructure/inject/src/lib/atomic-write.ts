@@ -162,6 +162,14 @@ export function atomicWriteFileSync(
  *
  * The new `data` is then written through `atomicWriteFileSync`, which applies
  * the full three-point redaction gate and the crash-safe write.
+ *
+ * `.bak` mode inheritance: atomicWriteFileSync only PRESERVES an EXISTING
+ * target's mode, and on FIRST backup the `.bak` does not exist, so it would be
+ * created under the default umask (commonly 0644). A 0600 MEMORY.md/SOUL.md
+ * carries the same sensitive bytes into its `.bak`, so a world-readable `.bak`
+ * re-opens the exact leak the target-mode preservation closed. We therefore
+ * stat the SOURCE target and apply its mode to the `.bak` (pre-creating it when
+ * absent), so the snapshot is born no more permissive than the file it copies.
  */
 export function atomicWriteWithBackup(
   targetPath: string,
@@ -176,8 +184,18 @@ export function atomicWriteWithBackup(
       // A pre-existing leaked secret must HALT before we mutate or back it up.
       assertNoSecrets(prior, "pre-existing-target", targetPath);
     }
+    // The `.bak` must be no more permissive than the source it snapshots. The
+    // source mode is the authority: if the `.bak` does not yet exist, pre-create
+    // it with the source's mode so atomicWriteFileSync's preserve-existing-mode
+    // path carries 0600 (etc.) through the rename instead of the umask default.
+    const backupPath = `${targetPath}.bak`;
+    const sourceMode = fs.statSync(targetPath).mode & 0o7777;
+    if (!fs.existsSync(backupPath)) {
+      fs.closeSync(fs.openSync(backupPath, "w", sourceMode));
+    }
+    fs.chmodSync(backupPath, sourceMode);
     // Snapshot the clean prior generation durably before the swap.
-    atomicWriteFileSync(`${targetPath}.bak`, prior, { assertRedaction });
+    atomicWriteFileSync(backupPath, prior, { assertRedaction });
   }
 
   atomicWriteFileSync(targetPath, data, { assertRedaction });

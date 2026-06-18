@@ -211,7 +211,10 @@ export function verifyJournalWritten(absolutePath: string, appendedChunk?: strin
   }
 
   // Defense-in-depth on the NEW content only: the chunk was already gated
-  // pre-append, but re-assert the on-disk copy of just the appended region.
+  // pre-append, but re-assert the appended region. We re-scan the in-memory
+  // `appendedChunk` (not a fresh disk read), which is sound because the
+  // endsWith() check just above proved the on-disk tail equals this chunk
+  // byte-for-byte, so scanning the chunk is scanning what landed on disk.
   // redactSensitiveText is idempotent against [REDACTED:...] markers, so a
   // count above zero means a real secret survived into the new chunk.
   const { count, labels } = redactSensitiveText(appendedChunk);
