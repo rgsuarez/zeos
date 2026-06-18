@@ -139,6 +139,68 @@ function parseEntries(content: string, isArchived: boolean): MemoryEntry[] {
   return entries;
 }
 
+/**
+ * Stable identity for a memory entry, used to detect the same logical entry
+ * appearing in BOTH MEMORY.md and MEMORY_ARCHIVE.md after a crash between the
+ * two-file writes of a curation move/promotion.
+ *
+ * Primary key is the Source Journal path embedded in the entry body (unique per
+ * captured session); it survives active <-> archive moves unchanged. When an
+ * entry has no Source Journal line (older entries, merged entries), the key
+ * falls back to `date::title`, which is the same pair the curate/promote/delete
+ * actions already treat as the addressable handle.
+ */
+export function memoryEntryIdentity(entry: MemoryEntry): string {
+  const sourceMatch = entry.content.match(/### Source Journal\n([^\n]+)/);
+  if (sourceMatch) return `journal::${sourceMatch[1].trim()}`;
+  return `dt::${entry.date}::${entry.title}`;
+}
+
+/**
+ * Resolve the duplicate-over-loss outcome of a crash between the two writes of
+ * a MEMORY/ARCHIVE move. The chosen write ordering (DESTINATION first, SOURCE
+ * second) guarantees a crash leaves an entry in BOTH files rather than NEITHER;
+ * this collapses that recoverable duplicate on load.
+ *
+ * Rule: if an identity appears in both lists, the ACTIVE copy wins and the
+ * archived copy is dropped. Rationale: every crash-between window in this code
+ * has the active list as the authoritative destination state (an end-session
+ * curation has already removed the moved entry from active intent; a
+ * /memory-curate promote has already added it to active intent), so keeping
+ * active and dropping the archived shadow converges to the intended post-move
+ * state. De-dup within a single list keeps the first occurrence.
+ */
+export function dedupeMemoryEntries(parsed: ParsedMemory): { removed: number } {
+  let removed = 0;
+
+  const dedupeWithin = (list: MemoryEntry[]): MemoryEntry[] => {
+    const seen = new Set<string>();
+    const out: MemoryEntry[] = [];
+    for (const entry of list) {
+      const id = memoryEntryIdentity(entry);
+      if (seen.has(id)) {
+        removed += 1;
+        continue;
+      }
+      seen.add(id);
+      out.push(entry);
+    }
+    return out;
+  };
+
+  parsed.entries = dedupeWithin(parsed.entries);
+  parsed.archivedEntries = dedupeWithin(parsed.archivedEntries);
+
+  const activeIds = new Set(parsed.entries.map(memoryEntryIdentity));
+  const archiveBefore = parsed.archivedEntries.length;
+  parsed.archivedEntries = parsed.archivedEntries.filter(
+    e => !activeIds.has(memoryEntryIdentity(e))
+  );
+  removed += archiveBefore - parsed.archivedEntries.length;
+
+  return { removed };
+}
+
 export function parseMemoryMd(content: string, archiveContent: string = ""): ParsedMemory {
   const result: ParsedMemory = {
     frontmatter: {},
@@ -159,6 +221,10 @@ export function parseMemoryMd(content: string, archiveContent: string = ""): Par
   if (archiveContent) {
     result.archivedEntries = parseEntries(archiveContent, true);
   }
+
+  // Collapse any crash-between-files duplicate (DESTINATION-first ordering
+  // leaves a recoverable duplicate, never a loss). No-op in the common case.
+  dedupeMemoryEntries(result);
 
   return result;
 }
