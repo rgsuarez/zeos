@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideSnap, decideEndSession, deriveNextActions, HANDOFF_NEXT_ACTIONS_FALLBACK } from "../dist/lib/handoff.js";
+import { decideSnap, decideEndSession, deriveNextActions, HANDOFF_NEXT_ACTIONS_FALLBACK, endSessionHeadline, endSessionMemorySkippedWarning } from "../dist/lib/handoff.js";
 import { RECONSTRUCTED_PLACEHOLDER_PREFIX, firstContentLine } from "../dist/lib/bridge.js";
 import { redactSensitiveText } from "../dist/lib/redact.js";
 
@@ -270,4 +270,44 @@ test("hint/snap: missing-required reject leads with the preferred { project, han
   assert.match(env.hint, /project, handoff/);
   assert.match(env.hint, /[Pp]referred/);
   assert.ok(Object.prototype.hasOwnProperty.call(env.expected_shape, "handoff"));
+});
+
+// ---- P2: the SESSION COMPLETE headline reflects the ACTUAL MEMORY outcome ----
+// The headline must never claim a save that did not happen: lock contention and
+// a redaction halt both SKIP the MEMORY write while the journal is still saved.
+
+test("endSessionHeadline: a successful MEMORY write claims the save", () => {
+  const headline = endSessionHeadline("saved");
+  assert.match(headline, /saved to MEMORY\.md/i, "the saved headline names the save");
+  assert.doesNotMatch(headline, /skipped/i, "the saved headline does not say skipped");
+});
+
+test("endSessionHeadline: a SKIPPED MEMORY write does NOT claim it was saved", () => {
+  const headline = endSessionHeadline("skipped");
+  // The whole point of the fix: the stale banner unconditionally said
+  // "Summary saved to MEMORY.md" even when the write was skipped. The skipped
+  // headline must not assert a MEMORY.md save happened.
+  assert.match(headline, /SKIPPED/, "the skipped headline says the MEMORY update was skipped");
+  assert.doesNotMatch(headline, /saved to MEMORY\.md/i, "the skipped headline never claims a MEMORY.md save");
+  assert.match(headline, /journal saved/i, "the journal is still reported as saved");
+});
+
+// ---- P3: the redaction-halt warning points at the ARCHIVE (the dup's home) ---
+
+test("endSessionMemorySkippedWarning: directs the operator to the archive (where the recoverable duplicate lives) and names MEMORY.md too", () => {
+  const memoryPath = "/tmp/demo/memory/MEMORY.md";
+  const archivePath = "/tmp/demo/memory/MEMORY_ARCHIVE.md";
+  const warning = endSessionMemorySkippedWarning(3, memoryPath, archivePath);
+
+  assert.match(warning, /SKIPPED/, "states the MEMORY write was skipped");
+  assert.match(warning, /3 secret-shaped value/, "carries the secret count");
+  // The recoverable DUPLICATE lives in MEMORY_ARCHIVE.md, so the inspect
+  // directive must name the archive path (the prior message wrongly pointed
+  // only at MEMORY.md).
+  assert.ok(warning.includes(archivePath), "the warning names the archive path to inspect");
+  assert.match(warning, /MEMORY_ARCHIVE\.md/, "the warning explains the duplicate is in the archive");
+  assert.ok(warning.includes(memoryPath), "the warning also names MEMORY.md");
+  // The archive must be presented as a thing to INSPECT, after the word Inspect.
+  const inspectIdx = warning.indexOf("Inspect");
+  assert.ok(inspectIdx !== -1 && warning.indexOf(archivePath) > inspectIdx, "the archive is named as an inspect target");
 });

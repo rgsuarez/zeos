@@ -31,6 +31,51 @@ import {
 /** Concise pointer used when a handoff blob has no explicit next-actions section. */
 export const HANDOFF_NEXT_ACTIONS_FALLBACK = "Review the Final Bridge handoff.";
 
+/**
+ * The actual outcome of the MEMORY.md write during zeos_end_session, used to
+ * render an honest SESSION COMPLETE headline. The headline must never claim a
+ * save that did not happen: lock contention and a redaction halt both SKIP the
+ * MEMORY write while the session journal is still durably saved.
+ */
+export type MemoryWriteOutcome = "saved" | "skipped";
+
+/**
+ * Render the SESSION COMPLETE headline line from the ACTUAL MEMORY write
+ * outcome. Pure: the journal is always saved at this point (the journal write
+ * precedes the MEMORY cycle), so the headline reports the journal as saved and
+ * the MEMORY write per its real result. The detail (why it was skipped) is
+ * carried separately in the curation/warning message; this is only the
+ * one-line headline so a skip is never described as a save.
+ */
+export function endSessionHeadline(memoryOutcome: MemoryWriteOutcome): string {
+  return memoryOutcome === "saved"
+    ? "Session saved to MEMORY.md."
+    : "Session journal saved. MEMORY.md update was SKIPPED (see warning below).";
+}
+
+/**
+ * Build the operator-facing warning shown when a redaction halt SKIPS the
+ * MEMORY.md write during zeos_end_session. The recoverable DUPLICATE (if
+ * auto-curation had already written the archive in the destination-first move)
+ * lives in MEMORY_ARCHIVE.md, NOT in MEMORY.md, so the operator must be pointed
+ * at the archive path (where the duplicate would be), with MEMORY.md named too.
+ */
+export function endSessionMemorySkippedWarning(
+  secretCount: number,
+  memoryPath: string,
+  archivePath: string,
+): string {
+  return (
+    `\nWARNING: MEMORY.md update SKIPPED, redaction assertion failed ` +
+    `(${secretCount} secret-shaped value(s)). The session journal was saved. ` +
+    `MEMORY.md was not rewritten; if auto-curation had begun, ` +
+    `MEMORY_ARCHIVE.md may hold a recoverable DUPLICATE of moved ` +
+    `entries (state is recoverable, not lost; the next clean /end ` +
+    `dedups it). Inspect ${archivePath} (where the recoverable ` +
+    `duplicate would be) and ${memoryPath} before the next /end.`
+  );
+}
+
 const NEXT_SECTION_HEADING = /^#{1,6}\s*(next\s*(actions?|steps?|tactical\s*move)|todo|handoff)\b/i;
 const ANY_HEADING = /^#{1,6}\s+\S/;
 
