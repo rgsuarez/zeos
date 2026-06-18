@@ -398,6 +398,21 @@ test_c2_fifo_log_never_hangs() {
   rm -rf "$tmp"
 }
 
+test_c2_symlink_log_refused() {
+  local tmp; tmp="$(mktemp -d)"; local state="$tmp/state"
+  local hook; hook="$(setup_hook_copy "$tmp" 1 1)"
+  mkdir -p "$state/logs"
+  local victim="$tmp/victim.txt"; printf 'untouched\n' > "$victim"
+  ln -s "$victim" "$state/logs/precompact-snap.log"   # the log path is a symlink
+  # A snap error would trigger a log append; the -L guard (the symlink branch of
+  # the same guard whose FIFO/non-regular branch C2.15 covers) must refuse the
+  # symlink with NO write-through to the victim, and the hook must still exit 0.
+  run_hook "$hook" "$state" STUB_VERSION=v22.0.0 STUB_SNAP_STDERR="zeos auto-snap: error (boom)" STUB_SNAP_RC=0
+  assert "C2.16 symlink log target: hook exits 0" "0" "$LAST_RC"
+  assert "C2.16 symlink log target refused (no write-through to the victim)" "untouched" "$(cat "$victim")"
+  rm -rf "$tmp"
+}
+
 # ── run ──────────────────────────────────────────────────────────────────────
 printf '\nzeos PreCompact auto-snap hook tests\n'
 printf '\nC1 lib unit (select_supported_node + precompact_log):\n'
@@ -424,6 +439,7 @@ test_c2_no_session_id_quiet
 test_c2_large_benign_output_quiet
 test_c2_lib_incomplete
 test_c2_fifo_log_never_hangs
+test_c2_symlink_log_refused
 
 rm -rf "$STUB_DIR"
 
