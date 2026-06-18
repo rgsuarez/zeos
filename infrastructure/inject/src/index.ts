@@ -110,6 +110,7 @@ import {
   currentSessionIdFromEnv,
   resolveSessionPointer,
   gcStalePointers,
+  deleteSessionPointer,
 } from "./lib/session-pointer.js";
 import { runHeadlessSnap } from "./lib/headless-snap.js";
 
@@ -1454,6 +1455,15 @@ ${formatRedactionNotice(redactions)}
         // Clear session registries for this agent's session
         delete _activeJournals[sessionKey];
         delete _sessionAgents[app.app_id];
+
+        // Clear the per-session active-project pointer so a PreCompact firing in
+        // a continued/resumed session after /end does NOT append a checkpoint
+        // below the `## Session End:` block. Keyed by the same env session id the
+        // /project load used to write it. Best-effort and never throws; a missing
+        // or unsafe id simply no-ops (the TTL would eventually reap a stray
+        // pointer, but clearing it here closes the window immediately).
+        const endSessionId = currentSessionIdFromEnv();
+        if (endSessionId) deleteSessionPointer(endSessionId);
 
         // Update MEMORY.md with session summary and auto-curate.
         // Lockfile prevents lost updates when parallel agents /end simultaneously.

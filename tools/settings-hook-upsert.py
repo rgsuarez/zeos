@@ -24,19 +24,40 @@ import json
 import sys
 
 
+class SettingsShapeError(Exception):
+    """Raised when settings.json has a `hooks` or `hooks.PreCompact` of an
+    unexpected type. Coercing those to {}/[] would silently DROP existing hook
+    events (SessionStart/SessionEnd) or foreign PreCompact entries, so we refuse
+    and leave the file untouched - the same posture as an unparseable file."""
+
+
 def upsert(data, command, marker):
     """Pure transform: mutate-and-return the settings dict. Separated from I/O
-    so tests can assert on the structure directly."""
+    so tests can assert on the structure directly.
+
+    Refuses (raises SettingsShapeError) rather than coercing when `hooks` is not
+    a dict or `hooks.PreCompact` is not a list, because replacing a corrupt shape
+    with {}/[] would silently discard sibling hooks the operator already has."""
     if not isinstance(data, dict):
-        data = {}
+        # A non-object top-level settings document is not something we can safely
+        # merge into; treat it like an unexpected shape rather than overwrite it.
+        raise SettingsShapeError(
+            "settings root is not a JSON object; refusing to overwrite"
+        )
 
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
-        hooks = data["hooks"] = {}
+        raise SettingsShapeError(
+            "hooks is present but not an object; refusing to overwrite "
+            "(would drop existing hooks)"
+        )
 
     precompact = hooks.setdefault("PreCompact", [])
     if not isinstance(precompact, list):
-        precompact = hooks["PreCompact"] = []
+        raise SettingsShapeError(
+            "hooks.PreCompact is present but not a list; refusing to overwrite "
+            "(would drop existing PreCompact entries)"
+        )
 
     entry = {"hooks": [{"type": "command", "command": command}]}
 
@@ -80,7 +101,15 @@ def main(argv):
         )
         return 1
 
-    data = upsert(data, command, marker)
+    try:
+        data = upsert(data, command, marker)
+    except SettingsShapeError as exc:
+        # Unexpected hooks/PreCompact shape: refuse and leave the file untouched
+        # (the file is not opened for write until upsert succeeds), mirroring the
+        # unparseable-JSON refusal above. Non-zero exit so the installer does not
+        # claim the hook was wired.
+        sys.stderr.write(f"error: {exc} at {path}\n")
+        return 1
 
     with open(path, "w") as f:
         json.dump(data, f, indent=2)

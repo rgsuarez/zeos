@@ -30,6 +30,7 @@ import { verifyJournalWritten } from "../path-resolver.js";
 import {
   resolveSessionPointer,
   gcStalePointers,
+  containedRealJournalPath,
   type SessionPointer,
 } from "./session-pointer.js";
 
@@ -153,6 +154,15 @@ export function runHeadlessSnap(
   if (!path.isAbsolute(journalPath)) {
     return { status: "noop", reason: "pointer-journal-not-absolute" };
   }
+  // Defense-in-depth on the load-bearing containment invariant: re-verify here,
+  // immediately before the append, that the journal (symlinks resolved) is still
+  // inside the journals root. resolveSessionPointer already checked this, but a
+  // caller-injected `resolvePointer` override, or a symlink swapped in after
+  // resolution, could otherwise slip an escaping target through to the append.
+  // A target that escapes (or has since vanished) NO-OPS, never writes.
+  if (containedRealJournalPath(journalPath) === null) {
+    return { status: "noop", reason: "pointer-journal-outside-root" };
+  }
 
   const timestamp = now.toISOString();
   const redactedHandoff = redactSensitiveText(handoff || "");
@@ -170,9 +180,21 @@ export function runHeadlessSnap(
   try {
     // appendFileSyncDurable applies the pre-append redaction gate internally and
     // fsyncs the tail; verifyJournalWritten confirms the chunk landed clean.
-    appendFileSyncDurable(journalPath, entry);
+    // createIfMissing:false closes a TOCTOU window: resolveSessionPointer checked
+    // the journal existed, but if it vanished in between, the default "a" flag
+    // would CREATE (resurrect) it. Without O_CREAT the open throws ENOENT, which
+    // we map to a no-op below rather than recreating a deleted journal.
+    appendFileSyncDurable(journalPath, entry, { createIfMissing: false });
     verifyJournalWritten(journalPath, entry);
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ENOENT") {
+      // Journal disappeared between resolve and append (e.g. operator deleted it,
+      // or a symlink target was removed). Treat as the stale-by-deletion no-op,
+      // NOT an error, so a vanished journal is never recreated and compaction is
+      // never disturbed.
+      return { status: "noop", reason: "journal-vanished-before-append" };
+    }
     return {
       status: "error",
       reason: err instanceof Error ? err.message : String(err),

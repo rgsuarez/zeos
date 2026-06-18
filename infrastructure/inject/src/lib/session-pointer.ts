@@ -39,6 +39,14 @@ import { expandPath } from "../path-resolver.js";
 export const SESSION_POINTER_TTL_MINUTES = 720; // 12h: spans a long working day
 
 /**
+ * Future-clock-skew tolerance for `updated_at`. A pointer stamped a little ahead
+ * of `now` is plausible real clock skew between the writer and the hook process;
+ * a pointer stamped FAR in the future is tampering (a forged timestamp that would
+ * otherwise never expire). Beyond this window we treat the pointer as invalid.
+ */
+const FUTURE_SKEW_TOLERANCE_MS = 2 * 60_000; // 2 minutes
+
+/**
  * On-disk pointer shape. `schema` guards against a future format change being
  * silently misread; an unknown schema is treated as unresolvable (no-op), never
  * coerced.
@@ -88,6 +96,77 @@ function pointerPathFor(sessionId: string): string {
 }
 
 /**
+ * Resolve the journals root from the environment, the SAME way resolvePointerDir
+ * does (live `ZEOS_STATE_ROOT`, not the module-load-time constant). This must be
+ * read live so the cold headless process, the MCP server, and tests that set the
+ * env after import all agree on the root; mirrors path-resolver's
+ * ZEOS_JOURNALS_ROOT = `${ZEOS_STATE_ROOT}/journals`.
+ */
+function journalsRootRaw(): string {
+  const stateRoot = process.env.ZEOS_STATE_ROOT ?? "~/.zeos";
+  return expandPath(`${stateRoot}/journals`);
+}
+
+/**
+ * Resolve the journals root to its real (symlink-free) absolute path. Returns
+ * null when the root cannot be resolved (e.g. it does not exist yet), which the
+ * containment check treats as fail-closed: if we cannot prove the root, we
+ * cannot prove containment, so the pointer is rejected.
+ */
+function realJournalsRoot(): string | null {
+  try {
+    return fs.realpathSync(journalsRootRaw());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Containment gate for a journal path (the load-bearing "never write the wrong
+ * journal" invariant). Returns the journal's REAL absolute path (symlinks fully
+ * resolved) ONLY when it sits inside the real journals root; null otherwise.
+ *
+ * This defeats two distinct escapes that a plain `path.isAbsolute` check misses:
+ *   - an absolute pointer whose `journal_path` is some OTHER existing file
+ *     (MEMORY.md, a transcript .jsonl, a project file) outside the journals tree;
+ *   - a journal entry that is a SYMLINK whose target escapes the journals tree.
+ * Both resolve, via realpath, to a real path outside the root and are rejected.
+ *
+ * When the journal file does not yet exist on disk, its real path is computed
+ * from realpath(dirname) + basename so a not-yet-created stub can still be
+ * validated; if even the parent cannot be resolved, containment fails (no write).
+ */
+export function containedRealJournalPath(journalPath: string): string | null {
+  if (!path.isAbsolute(journalPath)) return null;
+  const root = realJournalsRoot();
+  if (root === null) return null;
+
+  let real: string;
+  try {
+    real = fs.realpathSync(journalPath);
+  } catch {
+    // The journal may not exist yet (a fresh stub validated before first write).
+    // Resolve the real parent dir and re-attach the basename so a symlinked
+    // ancestor still cannot escape; a missing/unresolvable parent fails closed.
+    try {
+      const parentReal = fs.realpathSync(path.dirname(journalPath));
+      real = path.join(parentReal, path.basename(journalPath));
+    } catch {
+      return null;
+    }
+  }
+
+  // Path-boundary safe: require `real` to equal the root joined with a non-empty
+  // relative segment. `path.relative` yields "" for the root itself and a value
+  // starting with ".." (or an absolute path on a different volume) for anything
+  // outside, so both the root-itself and sibling-prefix (`/x/journals-evil`)
+  // cases are rejected.
+  const rel = path.relative(root, real);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  return real;
+}
+
+/**
  * Read `CLAUDE_CODE_SESSION_ID` from the environment, validated. Returns null
  * when absent or unsafe so the write path degrades to a no-op rather than
  * writing an unkeyable/poisonous pointer. Kept here (not inlined) so the MCP
@@ -118,6 +197,11 @@ export function writeSessionPointer(params: {
   if (!isSafeSessionId(sessionId)) return null;
   if (!appId || !agent || !journalPath) return null;
   if (!path.isAbsolute(journalPath)) return null;
+  // Containment gate: refuse to record a pointer whose journal (after symlink
+  // resolution) escapes the journals root. A rejected write leaves NO pointer on
+  // disk, so a tampered/symlinked target can never be persisted for the headless
+  // snap to later trust.
+  if (containedRealJournalPath(journalPath) === null) return null;
 
   const pointer: SessionPointer = {
     schema: POINTER_SCHEMA,
@@ -147,7 +231,12 @@ function isStale(updatedAt: string, ttlMinutes: number, now: Date): boolean {
   const t = Date.parse(updatedAt);
   if (Number.isNaN(t)) return true; // unparseable timestamp -> treat as stale
   const ageMs = now.getTime() - t;
-  if (ageMs < 0) return false; // clock skew into the future: not stale
+  if (ageMs < 0) {
+    // A future timestamp inside the small skew tolerance is plausible real clock
+    // skew (not stale); a FAR-future timestamp is a forged value that would never
+    // age out, so treat it as stale/invalid rather than perpetually fresh.
+    return -ageMs > FUTURE_SKEW_TOLERANCE_MS;
+  }
   return ageMs > ttlMinutes * 60_000;
 }
 
@@ -195,8 +284,17 @@ export function resolveSessionPointer(
     return null;
   }
 
-  // The journal must still exist for a snap to target it; a vanished journal
-  // means the pointer is stale-by-deletion -> no-op (do not recreate a journal).
+  // Re-validate containment on RESOLVE; never trust the on-disk pointer. A
+  // tampered `~/.zeos/.active/<id>.json` (or a journal swapped for a symlink that
+  // now escapes the journals root) must NO-OP, not direct an append at an
+  // arbitrary file. containedRealJournalPath resolves symlinks and requires the
+  // real target to sit inside the real journals root; it also fails when the
+  // journal no longer exists (realpath of the file throws and the parent-fallback
+  // path still points at a missing file), which preserves the prior
+  // vanished-journal -> no-op behavior (we never recreate a deleted journal).
+  if (containedRealJournalPath(parsed.journal_path) === null) return null;
+  // Belt-and-suspenders: the file itself must exist on disk for a snap to target
+  // it (the parent-fallback above can produce a contained-but-absent path).
   if (!fs.existsSync(parsed.journal_path)) return null;
 
   return parsed;
