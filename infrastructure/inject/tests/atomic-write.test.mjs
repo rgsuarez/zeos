@@ -284,3 +284,58 @@ test("atomicWriteWithBackup: preserves the prior file's 0600 mode on the rewritt
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- P2 SECURITY: the .bak snapshot inherits the SOURCE target's mode -------
+
+test("atomicWriteWithBackup: a 0600 target produces a 0600 .bak on FIRST backup (not a world-readable 0644)", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "MEMORY.md");
+    // A tightened sensitive file with no pre-existing .bak: the .bak is created
+    // fresh on this write. Without source-mode inheritance it would be born
+    // under the umask (commonly 0644), leaking the 0600 file's bytes to a
+    // world-readable backup.
+    fs.writeFileSync(target, "private but not token-shaped\n");
+    fs.chmodSync(target, 0o600);
+    const backup = `${target}.bak`;
+    assert.equal(fs.existsSync(backup), false, "precondition: no prior .bak exists");
+
+    atomicWriteWithBackup(target, "new private content\n");
+
+    assert.ok(fs.existsSync(backup), ".bak snapshot was created");
+    assert.equal(
+      fs.statSync(backup).mode & 0o777,
+      0o600,
+      "the .bak inherits the source 0600 mode (NOT broadened to 0644)"
+    );
+    // And it must actually carry the prior generation, mode aside.
+    assert.equal(fs.readFileSync(backup, "utf-8"), "private but not token-shaped\n");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteWithBackup: a second backup of a 0600 target keeps the .bak at 0600", () => {
+  const dir = mkTmpDir();
+  try {
+    const target = path.join(dir, "MEMORY.md");
+    fs.writeFileSync(target, "gen one\n");
+    fs.chmodSync(target, 0o600);
+
+    // First write creates the .bak inheriting 0600.
+    atomicWriteWithBackup(target, "gen two\n");
+    assert.equal(fs.statSync(`${target}.bak`).mode & 0o777, 0o600);
+
+    // The live target is still 0600 (mode preserved across the replace), so the
+    // second backup must also keep the .bak restrictive, not regress to 0644.
+    atomicWriteWithBackup(target, "gen three\n");
+    assert.equal(
+      fs.statSync(`${target}.bak`).mode & 0o777,
+      0o600,
+      "the .bak stays 0600 on a subsequent backup"
+    );
+    assert.equal(fs.readFileSync(`${target}.bak`, "utf-8"), "gen two\n", ".bak holds the prior generation");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

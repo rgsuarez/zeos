@@ -5,6 +5,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promoteMemoryEntryToSoul } from "../dist/lib/soul-promote.js";
 import { acquireMemoryLock, releaseMemoryLock } from "../dist/lib/memory-lock.js";
+import { RedactionAssertionError } from "../dist/lib/atomic-write.js";
+
+// Runtime construction of a secret-shaped string keeps this file free of static
+// token-shaped literals that secret scanners flag in source. Mirrors the
+// joinParts/padEnd technique used by atomic-write.test.mjs / redact.test.mjs.
+function joinParts(...parts) {
+  return parts.join("");
+}
+function secretShapedLine() {
+  const value = joinParts("a", "b", "c").padEnd(32, "x");
+  return `api_key="${value}"`;
+}
 
 function tempSetup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zeos-promote-test-"));
@@ -445,6 +457,60 @@ test("promoteMemoryEntryToSoul: after the lock is released the promote succeeds 
     // The lock is released by the successful promote (try/finally), so a
     // subsequent acquire succeeds.
     assert.equal(acquireMemoryLock(memoryPath), true, "lock released after a successful promote");
+    releaseMemoryLock(memoryPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P2: a dirty prior MEMORY aborts the promote BEFORE SOUL is touched ----
+
+test("promoteMemoryEntryToSoul: a secret-shaped value in MEMORY.md aborts the promote with SOUL.md unchanged", () => {
+  const root = tempSetup();
+  const soulPath = path.join(root, "souls", "demo", "SOUL.md");
+  const memoryPath = path.join(root, "memory", "demo", "MEMORY.md");
+  try {
+    // Inject a legacy secret-shaped value into the promotable entry's Summary
+    // body so the entry still parses (heading/date intact) but the prior MEMORY
+    // now fails the redaction gate, as it would if an older build had persisted
+    // a secret before the gate existed.
+    const clean = fs.readFileSync(memoryPath, "utf-8");
+    const dirty = clean.replace(
+      "The important decision body.",
+      `The important decision body. ${secretShapedLine()}`,
+    );
+    assert.notEqual(dirty, clean, "precondition: the secret-shaped line was injected");
+    fs.writeFileSync(memoryPath, dirty);
+
+    const soulBefore = fs.readFileSync(soulPath, "utf-8");
+
+    // The promote must PREFLIGHT-validate the prior MEMORY inside the held lock
+    // BEFORE writing SOUL. A dirty MEMORY therefore aborts the whole promote
+    // (the redaction halt surfaces the leak) rather than committing SOUL while
+    // leaving MEMORY unmarked (the divergent-audit-state class).
+    assert.throws(
+      () =>
+        promoteMemoryEntryToSoul({
+          soulPath,
+          memoryPath,
+          entryDate: "2026-05-22",
+          section: "Constraints",
+          dryRun: false,
+        }),
+      RedactionAssertionError,
+    );
+
+    // SOUL.md must be byte-for-byte unchanged: no doctrine block was inserted.
+    assert.equal(
+      fs.readFileSync(soulPath, "utf-8"),
+      soulBefore,
+      "SOUL.md is untouched when the prior MEMORY fails preflight",
+    );
+    assert(!fs.readFileSync(soulPath, "utf-8").includes("Promoted from MEMORY"), "no promotion block leaked into SOUL");
+
+    // The lock must be released by the finally even though the body threw, so a
+    // subsequent acquire succeeds (no orphaned lock).
+    assert.equal(acquireMemoryLock(memoryPath), true, "lock released after the aborted promote");
     releaseMemoryLock(memoryPath);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
