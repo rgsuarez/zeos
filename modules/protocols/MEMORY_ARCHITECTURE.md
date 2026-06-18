@@ -137,11 +137,17 @@ The Memory Architecture defines:
 - What's the current plan? (Blueprint)
 - What decisions were made? (Decision anchors in journals)
 
-**Loading Rules (per the Inject MCP runtime, `infrastructure/inject/src/lib/journal.ts`):**
+**Loading Rules (per the Inject MCP runtime, `infrastructure/inject/src/lib/journal.ts` and the boot assembler in `infrastructure/inject/src/index.ts`):**
+
+Boot renders journals through two distinct, complementary paths:
+
+- **Recent Sessions summary block (`loadMemory`).** Separately from the verbatim/continuation chain below, boot builds a `# Recent Sessions (Last 3)` block from the three newest *substantive* journals (unworked stubs skipped). Each entry is that journal's extracted summary, or a ~1,000-character fallback excerpt of its substantive body when no summary section is present. This is a condensed, multi-session glance, not a verbatim render, and it is rendered in addition to the latest/prior chain.
 - **Latest** = the newest *substantive* journal, skipping unworked stubs (`getLatestJournalMeta`). A newer interrupted-but-substantive journal is still the latest and is not shadowed by an older completed one. The latest journal is always rendered verbatim.
 - **Continuation** = also load one budgeted prior journal when the latest substantive session was **interrupted** (no `## Session End:` block) **OR** ended cleanly with non-empty `### Next Actions` (`shouldLoadPrior`). The prior is resolved via the `previous_session` link first, else the next-older substantive journal; the chain is capped at two full journals (latest + one prior).
 - If `active_blueprint` is set in ROADMAP, load blueprint.
 - The prior journal is budgeted: rendered verbatim if under budget, else summarized, else truncated. The latest is never summarized.
+
+The Recent Sessions block (summaries of the last 3) and the verbatim latest-plus-budgeted-prior chain coexist: the former gives a quick multi-session glance, the latter gives full-fidelity continuity for the immediate prior work.
 
 ---
 
