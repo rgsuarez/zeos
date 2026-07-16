@@ -59,6 +59,7 @@ REORIENT
 
 log_target() {
   local root="${ZEOS_STATE_ROOT:-${HOME:-}/.zeos}"
+  # shellcheck disable=SC2088  # literal "~/" prefix match on a configured value (parity with precompact-snap.sh), not tilde expansion
   case "$root" in
     "~/"*) [ -n "${HOME:-}" ] || return 1; root="${HOME}${root#\~}" ;;
   esac
