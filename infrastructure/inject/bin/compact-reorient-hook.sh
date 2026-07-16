@@ -23,8 +23,12 @@
 #
 # Safety contract (mirrors precompact-snap.sh):
 #   - NEVER blocks: every path exits 0, on any input, in any environment.
+#     Registration MUST carry a short "timeout" (seconds; 10 is the deployed
+#     value) so even a wedged runtime cannot hold the session to the hooks
+#     default 600s budget.
 #   - Reads no secrets; logs metadata only (session id, trigger, cwd, summary
-#     byte-length - never summary content).
+#     UTF-8 byte-length - never summary content). Logged fields are stripped of
+#     control characters so one event can never forge extra log lines.
 #   - Logger degrades quietly when python3 is unavailable or the payload is
 #     unparseable (a parse-skip line where the log is writable, else nothing);
 #     the injector needs no runtime at all.
@@ -45,7 +49,7 @@ MODE="${1:-}"
 emit_reorient() {
   cat <<'REORIENT'
 Context note: this session's earlier history was just replaced by a compaction summary. Measured on real sessions, such summaries retain roughly half of load-bearing facts and can lose tool-result-only values (exact ids, measured numbers, verbatim wording) entirely. Before the next mutating action (file edit, commit, push, external write, config or state change):
-1. Re-read the mission's primary sources: the campaign anchor or latest handoff bundle if one exists, the active plan file, and current lane state.
+1. Re-read the mission's primary sources that apply: the campaign anchor or latest handoff bundle if one exists, the active plan file if any, and current lane state.
 2. Treat values that exist only in the summary as unverified; re-check them against files, git, or live systems before acting on them.
 3. If this session is fleet-tracked (an orchestrator or a packet-born executor), report that a compaction occurred in the next SITREP.
 4. Prefer handing off at the next clean state boundary (/handoff) over running on through further compactions.
@@ -84,17 +88,28 @@ case "$MODE" in
     if [ -n "$PY" ] && [ -n "$PAYLOAD" ]; then
       LINE="$(printf '%s' "$PAYLOAD" | "$PY" -c '
 import json, sys
+
+def clean(v):
+    # One log line per event: strip control characters (incl. newlines) so a
+    # hostile or malformed field can never forge extra lines or shift columns.
+    s = v if isinstance(v, str) else "?"
+    s = "".join(ch for ch in s if ch.isprintable())
+    return s if s else "?"
+
 try:
     o = json.load(sys.stdin)
-    sid = o.get("session_id", "?") if isinstance(o, dict) else "?"
-    trig = o.get("trigger", "?") if isinstance(o, dict) else "?"
-    cwd = o.get("cwd", "?") if isinstance(o, dict) else "?"
-    summ = o.get("compact_summary", "") if isinstance(o, dict) else ""
-    n = len(summ) if isinstance(summ, str) else 0
+    if not isinstance(o, dict):
+        raise ValueError
+    sid = clean(o.get("session_id", "?"))
+    trig = clean(o.get("trigger", "?"))
+    cwd = clean(o.get("cwd", "?"))
+    summ = o.get("compact_summary", "")
+    n = len(summ.encode("utf-8", "ignore")) if isinstance(summ, str) else 0
     print(f"compact session={sid} trigger={trig} cwd={cwd} summary_bytes={n}")
 except Exception:
     print("compact parse-skip")
 ' 2>/dev/null || true)"
+      LINE="$(printf '%s' "$LINE" | head -n1)"
       append_log "${LINE:-compact parse-skip}"
     else
       append_log "compact parse-skip reason=no-python3-or-empty-payload"
