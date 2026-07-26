@@ -1,3 +1,5 @@
+> **RETIRED (2026-07-26).** zeos is retired and this repository is archived. See [RETIRED.md](RETIRED.md) for successors. Do not run the installer.
+
 # zeos
 
 > *Memory infrastructure for AI.*
