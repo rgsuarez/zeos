@@ -1,4 +1,15 @@
 #!/bin/bash
+# ══════════════════════════════════════════════════════════════════
+# zeos IS RETIRED (2026-07-26). This installer is permanently disabled.
+# ══════════════════════════════════════════════════════════════════
+echo "zeos was retired and unwired on 2026-07-26. This installer is disabled."
+echo "See RETIRED.md at the repo root for what replaced each function:"
+echo "  context continuity -> compact-net; session closure -> /closeout;"
+echo "  coordination -> the lane binary (~/.cargo/bin/lane); orchestration -> FlagDeck."
+echo "The ~/.zeos state tree remains readable in place until the consolidation"
+echo "campaign migrates it. Do not re-run this installer."
+exit 1
+
 # ═══════════════════════════════════════════════════════════════
 # zeos Installer
 # ═══════════════════════════════════════════════════════════════
